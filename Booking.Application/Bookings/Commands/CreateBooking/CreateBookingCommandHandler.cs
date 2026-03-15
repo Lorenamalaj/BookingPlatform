@@ -8,7 +8,7 @@ namespace Booking.Application.Bookings.Commands.CreateBooking;
 public class CreateBookingCommandHandler
 {
     private readonly BookingPlatformDbContext _context;
-    private readonly EmailService _emailService; // Shtojmë shërbimin këtu
+    private readonly EmailService _emailService; 
 
     public CreateBookingCommandHandler(BookingPlatformDbContext context, EmailService emailService)
     {
@@ -42,7 +42,6 @@ public class CreateBookingResult
         if (guest == null)
             return new CreateBookingResult { IsSuccess = false, Error = "Guest not found" };
 
-        // 3. Kontrollet e tjera (Guest count & Overlap)
         if (command.GuestCount > property.MaxGuests)
             return new CreateBookingResult { IsSuccess = false, Error = $"Max guests: {property.MaxGuests}" };
 
@@ -70,18 +69,46 @@ public class CreateBookingResult
         );
 
         _context.Bookings.Add(booking);
-        property.MarkAsBooked(); // E bëjmë bashkë me booking
+        property.MarkAsBooked(); 
 
         await _context.SaveChangesAsync();
 
         // 5. DËRGIMI I EMAIL-IT (Pasi u ruajt me sukses në DB)
         try
         {
-            await _emailService.SendEmailAsync(guest.Email, "Test", "Test Body");
+            var subject = $"Booking Confirmation #{booking.Id}";
+            var body = $@"
+Hello {guest.FirstName},
+
+Your booking has been confirmed!
+
+Booking Details:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Property ID: {property.Id}
+Check-in: {command.StartDate:dddd, dd MMMM yyyy}
+Check-out: {command.EndDate:dddd, dd MMMM yyyy}
+Guests: {command.GuestCount}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Price Breakdown:
+- Period: ${command.PriceForPeriod}
+- Cleaning Fee: ${command.CleaningFee}
+- Amenities: ${command.AmenitiesUpCharge}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total: ${booking.TotalPrice}
+
+Status: Pending (waiting for owner confirmation)
+
+Thank you for choosing our platform!
+
+Best regards,
+Booking Platform Team
+";
+
+            await _emailService.SendEmailAsync(guest.Email, subject, body);
         }
         catch (Exception ex)
         {
-            // Kjo do të ta nxjerrë errorin te Postman në vend të "Success"
             return new CreateBookingResult { IsSuccess = false, Error = "Email Error: " + ex.Message };
         }
 
