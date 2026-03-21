@@ -15,9 +15,11 @@ using Booking.Application.Reviews.Commands.DeleteReview;
 using Booking.Application.Reviews.Commands.UpdateReview;
 using Booking.Application.Reviews.Queries.GetReviewById;
 using Booking.Application.Reviews.Queries.GetReviewsByProperty;
+using Booking.Application.Users.Commands.ChangePassword;
 using Booking.Application.Users.Commands.LoginUser;
 using Booking.Application.Users.Commands.Logout;
 using Booking.Application.Users.Commands.RefreshToken;
+using Booking.Application.Users.Commands.UpdateUserProfile;
 using Booking.Application.Users.Queries.GetUser;
 using Booking.Infrastructure.Authentication;
 using Booking.Infrastructure.Data;
@@ -674,6 +676,76 @@ app.MapPost("/test/logout", async (
     }
 
     return Results.Ok(new { message = "Logged out successfully" });
+})
+.RequireAuthorization();
+
+// PUT /test/users/profile
+app.MapPut("/test/users/profile", async (
+    [FromBody] UpdateUserProfileCommand command,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    // Extract userId from token
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var currentUserId = Guid.Parse(userIdClaim.Value);
+
+    // User can only update their own profile
+    command.UserId = currentUserId;
+
+    var validator = new UpdateUserProfileValidator();
+    var validationResult = await validator.ValidateAsync(command);
+
+    if (!validationResult.IsValid)
+    {
+        return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
+    }
+
+    var handler = new UpdateUserProfileCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Profile updated successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// POST /test/users/change-password
+app.MapPost("/test/users/change-password", async (
+    [FromBody] ChangePasswordCommand command,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    // Extract userId from token
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var currentUserId = Guid.Parse(userIdClaim.Value);
+
+    // User can only change their own password
+    command.UserId = currentUserId;
+
+    var validator = new ChangePasswordValidator();
+    var validationResult = await validator.ValidateAsync(command);
+
+    if (!validationResult.IsValid)
+    {
+        return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
+    }
+
+    var handler = new ChangePasswordCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Password changed successfully" })
+        : Results.BadRequest(new { error = result.Error });
 })
 .RequireAuthorization();
 
