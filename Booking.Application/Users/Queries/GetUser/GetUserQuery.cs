@@ -1,10 +1,6 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
+﻿namespace Booking.Application.Users.Queries.GetUser;
 
-namespace Booking.Application.Users.Queries.GetUser
+public class GetUserQuery
 {
-    internal class GetUserQuery
-    {
-    }
+    public Guid UserId { get; set; }
 }
