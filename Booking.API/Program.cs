@@ -3,11 +3,14 @@ using Booking.Application.Bookings.Commands.ConfirmBooking;
 using Booking.Application.Bookings.Commands.CreateBooking;
 using Booking.Application.Bookings.Queries.GetAllBookings;
 using Booking.Application.Bookings.Queries.GetBookingById;
+using Booking.Application.Bookings.Queries.GetBookingsForMyProperties;
+using Booking.Application.Bookings.Queries.GetMyBookings;
 using Booking.Application.Properties.Commands.ApproveProperty;
 using Booking.Application.Properties.Commands.CreateProperty;
 using Booking.Application.Properties.Commands.DeleteProperty;
 using Booking.Application.Properties.Commands.UpdateProperty;
 using Booking.Application.Properties.Queries.GetAllProperties;
+using Booking.Application.Properties.Queries.GetMyProperties;
 using Booking.Application.Properties.Queries.GetPropertyById;
 using Booking.Application.Properties.Queries.SearchProperties;
 using Booking.Application.Reviews.Commands.CreateReview;
@@ -746,6 +749,97 @@ app.MapPost("/test/users/change-password", async (
     return result.IsSuccess
         ? Results.Ok(new { message = "Password changed successfully" })
         : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// GET /test/bookings/my-bookings
+app.MapGet("/test/bookings/my-bookings", async (
+    int? page,
+    int? pageSize,
+    string? status,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var query = new GetMyBookingsQuery
+    {
+        UserId = userId,
+        Status = status,
+        Page = page ?? 1,
+        PageSize = pageSize ?? 10
+    };
+
+    var handler = new GetMyBookingsQueryHandler(db);
+    var result = await handler.Handle(query);
+
+    return Results.Ok(result);
+})
+.RequireAuthorization();
+
+// GET /test/properties/my-properties
+app.MapGet("/test/properties/my-properties", async (
+    int? page,
+    int? pageSize,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var query = new GetMyPropertiesQuery
+    {
+        OwnerId = userId,
+        Page = page ?? 1,
+        PageSize = pageSize ?? 10
+    };
+
+    var handler = new GetMyPropertiesQueryHandler(db);
+    var result = await handler.Handle(query);
+
+    return Results.Ok(result);
+})
+.RequireAuthorization();
+
+// GET /test/bookings/my-properties-bookings
+app.MapGet("/test/bookings/my-properties-bookings", async (
+    int? page,
+    int? pageSize,
+    string? status,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var query = new GetBookingsForMyPropertiesQuery
+    {
+        OwnerId = userId,
+        Status = status,
+        Page = page ?? 1,
+        PageSize = pageSize ?? 10
+    };
+
+    var handler = new GetBookingsForMyPropertiesQueryHandler(db);
+    var result = await handler.Handle(query);
+
+    return Results.Ok(result);
 })
 .RequireAuthorization();
 
