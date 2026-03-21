@@ -27,3 +27,8 @@ x86/
 *.log
 *.cache
 .vscode/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
