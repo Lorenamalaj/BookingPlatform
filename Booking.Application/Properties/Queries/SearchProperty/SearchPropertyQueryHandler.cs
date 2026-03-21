@@ -1,5 +1,6 @@
-﻿using Booking.Infrastructure.Data;
+﻿using Booking.Application.Common;
 using Booking.Application.Properties.Queries.GetPropertyById;
+using Booking.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 
 namespace Booking.Application.Properties.Queries.SearchProperties;
@@ -13,47 +14,52 @@ public class SearchPropertiesQueryHandler
         _context = context;
     }
 
-    public async Task<SearchPropertiesResult> Handle(SearchPropertiesQuery query)
+    public async Task<PagedResult<PropertyDto>> Handle(SearchPropertiesQuery query)
     {
-        var propertiesQuery = _context.Properties.AsQueryable();
+        // Validate pagination
+        if (query.Page < 1) query.Page = 1;
+        if (query.PageSize < 1) query.PageSize = 10;
+        if (query.PageSize > 100) query.PageSize = 100;
 
-        // Filter by City (via Address)
-        if (!string.IsNullOrWhiteSpace(query.City))
+        // Build query with filters
+        var propertiesQuery = _context.Properties
+            .Include(p => p.Address)
+            .AsQueryable();
+
+        // Apply filters
+        if (!string.IsNullOrEmpty(query.City))
         {
-            propertiesQuery = propertiesQuery.Where(p =>
-                _context.Addresses
-                    .Any(a => a.Id == p.AddressId && a.City.Contains(query.City)));
+            propertiesQuery = propertiesQuery.Where(p => p.Address.City == query.City);
         }
 
-        // Filter by PropertyType
-        if (!string.IsNullOrWhiteSpace(query.PropertyType))
+        if (!string.IsNullOrEmpty(query.PropertyType))
         {
-            propertiesQuery = propertiesQuery.Where(p =>
-                p.PropertyType.Contains(query.PropertyType));
+            propertiesQuery = propertiesQuery.Where(p => p.PropertyType == query.PropertyType);
         }
 
-        // Filter by MinGuests
         if (query.MinGuests.HasValue)
         {
-            propertiesQuery = propertiesQuery.Where(p =>
-                p.MaxGuests >= query.MinGuests.Value);
+            propertiesQuery = propertiesQuery.Where(p => p.MaxGuests >= query.MinGuests.Value);
         }
 
-        // Filter by MaxGuests
         if (query.MaxGuests.HasValue)
         {
-            propertiesQuery = propertiesQuery.Where(p =>
-                p.MaxGuests <= query.MaxGuests.Value);
+            propertiesQuery = propertiesQuery.Where(p => p.MaxGuests <= query.MaxGuests.Value);
         }
 
-        // Filter by IsApproved
         if (query.IsApproved.HasValue)
         {
-            propertiesQuery = propertiesQuery.Where(p =>
-                p.IsApproved == query.IsApproved.Value);
+            propertiesQuery = propertiesQuery.Where(p => p.IsApproved == query.IsApproved.Value);
         }
 
+        // Get total count AFTER filters, BEFORE pagination
+        var totalCount = await propertiesQuery.CountAsync();
+
+        // Apply pagination
         var properties = await propertiesQuery
+            .OrderBy(p => p.Name)  // Consistent ordering
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
             .Select(p => new PropertyDto
             {
                 Id = p.Id,
@@ -71,18 +77,6 @@ public class SearchPropertiesQueryHandler
             })
             .ToListAsync();
 
-        return new SearchPropertiesResult
-        {
-            IsSuccess = true,
-            Properties = properties,
-            Count = properties.Count
-        };
+        return new PagedResult<PropertyDto>(properties, totalCount, query.Page, query.PageSize);
     }
-}
-
-public class SearchPropertiesResult
-{
-    public bool IsSuccess { get; set; }
-    public List<PropertyDto> Properties { get; set; }
-    public int Count { get; set; }
 }

@@ -7,10 +7,10 @@ public class CreateBookingValidator : AbstractValidator<CreateBookingCommand>
     public CreateBookingValidator()
     {
         RuleFor(x => x.PropertyId)
-            .GreaterThan(0).WithMessage("Property ID is required");
+            .NotEmpty().WithMessage("Property ID is required");
 
         RuleFor(x => x.GuestId)
-            .GreaterThan(0).WithMessage("Guest ID is required");
+            .NotEmpty().WithMessage("Guest ID is required");
 
         RuleFor(x => x.StartDate)
             .NotEmpty().WithMessage("Start date is required")

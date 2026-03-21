@@ -1,12 +1,14 @@
-﻿using System;
+﻿using Booking.Domain.Properties;
+using System;
 
 namespace Booking.Domain.Bookings
 {
     public class Booking
     {
-        public int Id { get; private set; }
-        public int PropertyId { get; private set; }
-        public int GuestId { get; private set; }
+        public Guid Id { get; private set; }
+        public Guid PropertyId { get; private set; }
+        public Guid GuestId { get; private set; }
+        public Property? Property { get; private set; }
         public DateTime StartDate { get; private set; }
         public DateTime EndDate { get; private set; }
         public int GuestCount { get; private set; }
@@ -26,8 +28,8 @@ namespace Booking.Domain.Bookings
         private Booking() { }
 
         public Booking(
-            int propertyId,
-            int guestId,
+            Guid propertyId,
+            Guid guestId,
             DateTime startDate,
             DateTime endDate,
             int guestCount,
@@ -35,10 +37,10 @@ namespace Booking.Domain.Bookings
             decimal amenitiesUpCharge,
             decimal priceForPeriod)
         {
-            if (propertyId <= 0)
+            if (propertyId == Guid.Empty)
                 throw new ArgumentException("Invalid property ID", nameof(propertyId));
 
-            if (guestId <= 0)
+            if (guestId == Guid.Empty)
                 throw new ArgumentException("Invalid guest ID", nameof(guestId));
 
             if (startDate >= endDate)

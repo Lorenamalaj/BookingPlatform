@@ -7,7 +7,7 @@ public class UpdatePropertyValidator : AbstractValidator<UpdatePropertyCommand>
     public UpdatePropertyValidator()
     {
         RuleFor(x => x.PropertyId)
-            .GreaterThan(0).WithMessage("Property ID is required");
+            .NotEmpty().WithMessage("Property ID is required");
 
         RuleFor(x => x.Name)
             .NotEmpty().WithMessage("Property name is required")

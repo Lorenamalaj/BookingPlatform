@@ -6,6 +6,6 @@ namespace Booking.Application.Bookings.Queries.GetBookingById
 {
     public class GetBookingByIdQuery
     {
-        public int BookingId { get; set; }  
+        public Guid BookingId { get; set; }  
     }
 }

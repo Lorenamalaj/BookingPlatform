@@ -7,7 +7,7 @@ public class CreatePropertyValidator : AbstractValidator<CreatePropertyCommand>
     public CreatePropertyValidator()
     {
         RuleFor(x => x.OwnerId)
-            .GreaterThan(0).WithMessage("Owner ID is required");
+            .NotEmpty().WithMessage("Owner ID is required");
 
         RuleFor(x => x.Name)
             .NotEmpty().WithMessage("Property name is required")

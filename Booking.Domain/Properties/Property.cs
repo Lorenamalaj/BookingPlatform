@@ -1,15 +1,17 @@
-﻿using System;
+﻿using Booking.Domain.Addresses;
+using System;
 
 namespace Booking.Domain.Properties
 {
     public class Property
     {
-        public int Id { get; private set; }
-        public int OwnerId { get; private set; }
+        public Guid Id { get; private set; }
+        public Guid OwnerId { get; private set; }
         public string Name { get; private set; }
         public string Description { get; private set; }
         public string PropertyType { get; private set; }
-        public int AddressId { get; private set; }
+        public Guid AddressId { get; private set; }
+        public Address? Address { get; private set; }
         public int MaxGuests { get; private set; }
         public TimeSpan CheckInTime { get; private set; }
         public TimeSpan CheckOutTime { get; private set; }
@@ -22,16 +24,16 @@ namespace Booking.Domain.Properties
         private Property() { }
 
         public Property(
-            int ownerId,
+            Guid ownerId,
             string name,
             string description,
             string propertyType,
-            int addressId,
+            Guid addressId,
             int maxGuests,
             TimeSpan checkInTime,
             TimeSpan checkOutTime)
         {
-            if (ownerId <= 0)
+            if (ownerId == Guid.Empty)
                 throw new ArgumentException("Invalid owner ID", nameof(ownerId));
 
             if (string.IsNullOrWhiteSpace(name))
@@ -43,7 +45,7 @@ namespace Booking.Domain.Properties
             if (string.IsNullOrWhiteSpace(propertyType))
                 throw new ArgumentException("Property type is required", nameof(propertyType));
 
-            if (addressId <= 0)
+            if (addressId == Guid.Empty)
                 throw new ArgumentException("Invalid address ID", nameof(addressId));
 
             if (maxGuests <= 0)

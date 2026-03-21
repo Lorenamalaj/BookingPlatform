@@ -7,4 +7,6 @@ public class SearchPropertiesQuery
     public int? MinGuests { get; set; }
     public int? MaxGuests { get; set; }
     public bool? IsApproved { get; set; }
+    public int Page { get; set; } = 1;
+    public int PageSize { get; set; } = 10;
 }

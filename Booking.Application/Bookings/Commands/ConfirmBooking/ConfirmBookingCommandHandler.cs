@@ -15,6 +15,7 @@ public class ConfirmBookingCommandHandler
     public async Task<ConfirmBookingResult> Handle(ConfirmBookingCommand command)
     {
         var booking = await _context.Bookings
+            .Include(b => b.Property)
             .FirstOrDefaultAsync(b => b.Id == command.BookingId);
 
         if (booking == null)
@@ -26,9 +27,26 @@ public class ConfirmBookingCommandHandler
             };
         }
 
+        if (booking.Property == null)
+        {
+            return new ConfirmBookingResult
+            {
+                IsSuccess = false,
+                Error = "Property information not found"
+            };
+        }
+
+        if (booking.Property.OwnerId != command.RequestingUserId)
+        {
+            return new ConfirmBookingResult
+            {
+                IsSuccess = false,
+                Error = "Unauthorized: Only property owner can confirm bookings"
+            };
+        }
+
         try
         {
-            // Domain method handles validation (can only confirm pending)
             booking.Confirm();
             await _context.SaveChangesAsync();
 

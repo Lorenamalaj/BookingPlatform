@@ -1,5 +1,6 @@
 ﻿using Booking.Infrastructure.Data;
 using Booking.Application.Properties.Queries.GetPropertyById;
+using Booking.Application.Common;
 using Microsoft.EntityFrameworkCore;
 
 namespace Booking.Application.Properties.Queries.GetAllProperties;
@@ -13,9 +14,20 @@ public class GetAllPropertiesQueryHandler
         _context = context;
     }
 
-    public async Task<GetAllPropertiesResult> Handle(GetAllPropertiesQuery query)
+    public async Task<PagedResult<PropertyDto>> Handle(GetAllPropertiesQuery query)
     {
+
+        if (query.Page < 1) query.Page = 1;
+        if (query.PageSize < 1) query.PageSize = 10;
+        if (query.PageSize > 100) query.PageSize = 100; // Max 100 per page
+
+        var totalCount = await _context.Properties.CountAsync();
+
+
         var properties = await _context.Properties
+            .OrderBy(p => p.CreatedAt)  // ← IMPORTANT: Consistent ordering!
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
             .Select(p => new PropertyDto
             {
                 Id = p.Id,
@@ -33,18 +45,6 @@ public class GetAllPropertiesQueryHandler
             })
             .ToListAsync();
 
-        return new GetAllPropertiesResult
-        {
-            IsSuccess = true,
-            Properties = properties,
-            Count = properties.Count
-        };
+        return new PagedResult<PropertyDto>(properties, totalCount, query.Page, query.PageSize);
     }
-}
-
-public class GetAllPropertiesResult
-{
-    public bool IsSuccess { get; set; }
-    public List<PropertyDto> Properties { get; set; }
-    public int Count { get; set; }
 }

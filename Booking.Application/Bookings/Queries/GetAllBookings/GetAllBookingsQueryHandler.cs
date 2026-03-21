@@ -1,5 +1,6 @@
 ﻿using Booking.Infrastructure.Data;
 using Booking.Application.Bookings.Queries.GetBookingById;
+using Booking.Application.Common;
 using Microsoft.EntityFrameworkCore;
 
 namespace Booking.Application.Bookings.Queries.GetAllBookings;
@@ -13,9 +14,18 @@ public class GetAllBookingsQueryHandler
         _context = context;
     }
 
-    public async Task<GetAllBookingsResult> Handle(GetAllBookingsQuery query)
+    public async Task<PagedResult<BookingDto>> Handle(GetAllBookingsQuery query)
     {
+        if (query.Page < 1) query.Page = 1;
+        if (query.PageSize < 1) query.PageSize = 10;
+        if (query.PageSize > 100) query.PageSize = 100;
+
+        var totalCount = await _context.Bookings.CountAsync();
+
         var bookings = await _context.Bookings
+            .OrderByDescending(b => b.CreatedAt)  
+            .Skip((query.Page - 1) * query.PageSize)
+            .Take(query.PageSize)
             .Select(b => new BookingDto
             {
                 Id = b.Id,
@@ -36,18 +46,6 @@ public class GetAllBookingsQueryHandler
             })
             .ToListAsync();
 
-        return new GetAllBookingsResult
-        {
-            IsSuccess = true,
-            Bookings = bookings,
-            Count = bookings.Count
-        };
+        return new PagedResult<BookingDto>(bookings, totalCount, query.Page, query.PageSize);
     }
-}
-
-public class GetAllBookingsResult
-{
-    public bool IsSuccess { get; set; }
-    public List<BookingDto> Bookings { get; set; }
-    public int Count { get; set; }
 }

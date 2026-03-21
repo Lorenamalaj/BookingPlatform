@@ -2,5 +2,5 @@
 
 public class CompleteBookingCommand
 {
-    public int BookingId { get; set; }
+    public Guid BookingId { get; set; }
 }

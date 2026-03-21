@@ -4,21 +4,21 @@ namespace Booking.Domain.Reviews
 {
     public class Review
     {
-        public int Id { get; private set; }
-        public int BookingId { get; private set; }
-        public int GuestId { get; private set; }
+        public Guid Id { get; private set; }
+        public Guid BookingId { get; private set; }
+        public Guid GuestId { get; private set; }
         public int Rating { get; private set; }
         public string Comment { get; private set; }
         public DateTime CreatedAt { get; private set; }
 
         private Review() { }
 
-        public Review(int bookingId, int guestId, int rating, string comment = null)
+        public Review(Guid bookingId, Guid guestId, int rating, string comment = null)
         {
-            if (bookingId <= 0)
+            if (bookingId == Guid.Empty )
                 throw new ArgumentException("Invalid booking ID", nameof(bookingId));
 
-            if (guestId <= 0)
+            if (guestId == Guid.Empty)
                 throw new ArgumentException("Invalid guest ID", nameof(guestId));
 
             if (rating < 1 || rating > 5)

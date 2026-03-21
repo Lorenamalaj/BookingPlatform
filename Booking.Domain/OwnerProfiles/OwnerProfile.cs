@@ -4,7 +4,7 @@ namespace Booking.Domain.OwnerProfiles
 {
     public class OwnerProfile
     {
-        public int UserId { get; private set; }
+        public Guid UserId { get; private set; }
         public string IdentityCardNumber { get; private set; }
         public string VerificationStatus { get; private set; }
         public string BusinessName { get; private set; }
@@ -14,9 +14,9 @@ namespace Booking.Domain.OwnerProfiles
 
         private OwnerProfile() { }
 
-        public OwnerProfile(int userId, string identityCardNumber, string businessName = null)
+        public OwnerProfile(Guid userId, string identityCardNumber, string businessName = null)
         {
-            if (userId <= 0)
+            if (userId == Guid.Empty)
                 throw new ArgumentException("Invalid user ID", nameof(userId));
 
             if (string.IsNullOrWhiteSpace(identityCardNumber))

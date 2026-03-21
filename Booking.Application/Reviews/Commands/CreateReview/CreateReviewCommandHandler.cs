@@ -82,6 +82,6 @@ public class CreateReviewCommandHandler
 public class CreateReviewResult
 {
     public bool IsSuccess { get; set; }
-    public int ReviewId { get; set; }
+    public Guid ReviewId { get; set; }
     public string? Error { get; set; }
 }

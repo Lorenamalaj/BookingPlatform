@@ -59,7 +59,7 @@ public class GetPropertyByIdResult
 
 public class PropertyDto
 {
-    public int Id { get; set; }
+    public Guid Id { get; set; }
     public string Name { get; set; }
     public string Description { get; set; }
     public string PropertyType { get; set; }
@@ -68,7 +68,7 @@ public class PropertyDto
     public string CheckOutTime { get; set; }
     public bool IsActive { get; set; }
     public bool IsApproved { get; set; }
-    public int OwnerId { get; set; }
-    public int AddressId { get; set; }
+    public Guid OwnerId { get; set; }
+    public Guid AddressId { get; set; }
     public DateTime CreatedAt { get; set; }
 }

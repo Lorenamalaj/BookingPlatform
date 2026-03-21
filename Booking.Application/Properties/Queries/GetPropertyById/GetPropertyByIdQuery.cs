@@ -6,6 +6,6 @@ namespace Booking.Application.Properties.Queries.GetPropertyById
 {
     public class GetPropertyByIdQuery
     {
-        public int PropertyId { get; set; }
+        public Guid PropertyId { get; set; }
     }
 }

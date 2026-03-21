@@ -2,5 +2,6 @@
 
 public class ConfirmBookingCommand
 {
-    public int BookingId { get; set; }
+    public Guid BookingId { get; set; }
+    public Guid RequestingUserId { get; set; }
 }

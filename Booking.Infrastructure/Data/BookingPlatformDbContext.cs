@@ -38,6 +38,7 @@ namespace Booking.Infrastructure.Data
                 entity.HasKey(u => u.Id);
 
                 entity.Property(u => u.Id)
+                    .HasDefaultValueSql("NEWSEQUENTIALID()")
                     .ValueGeneratedOnAdd();
 
                 entity.Property(u => u.FirstName)
@@ -87,9 +88,24 @@ namespace Booking.Infrastructure.Data
 
                 // Seed default roles
                 entity.HasData(
-                    new { Id = 1, Name = "Guest", Description = "Regular guest user who can book properties" },
-                    new { Id = 2, Name = "Owner", Description = "Property owner who can list properties" },
-                    new { Id = 3, Name = "Admin", Description = "Administrator with full system access" }
+                    new
+                    {
+                        Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                        Name = "Guest",
+                        Description = "Regular guest user who can book properties"
+                    },
+                    new
+                    {
+                        Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                        Name = "Owner",
+                        Description = "Property owner who can list properties"
+                    },
+                    new
+                    {
+                        Id = Guid.Parse("33333333-3333-3333-3333-333333333333"),
+                        Name = "Admin",
+                        Description = "Administrator with full system access"
+                    }
                 );
             });
 
@@ -227,6 +243,11 @@ namespace Booking.Infrastructure.Data
                     .WithMany()
                     .HasForeignKey(b => b.GuestId)
                     .OnDelete(DeleteBehavior.Restrict);
+
+         entity.HasOne(b => b.Property)
+        .WithMany()
+        .HasForeignKey(b => b.PropertyId)
+        .OnDelete(DeleteBehavior.Restrict);
             });
 
             // Review Configuration
@@ -250,6 +271,7 @@ namespace Booking.Infrastructure.Data
                     .WithMany()
                     .HasForeignKey(r => r.GuestId)
                     .OnDelete(DeleteBehavior.Restrict);
+
             });
         }
     }

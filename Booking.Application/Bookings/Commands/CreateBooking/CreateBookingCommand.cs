@@ -2,8 +2,8 @@
 
 public class CreateBookingCommand
 {
-    public int PropertyId { get; set; }
-    public int GuestId { get; set; }
+    public Guid PropertyId { get; set; }
+    public Guid GuestId { get; set; }
     public DateTime StartDate { get; set; }
     public DateTime EndDate { get; set; }
     public int GuestCount { get; set; }

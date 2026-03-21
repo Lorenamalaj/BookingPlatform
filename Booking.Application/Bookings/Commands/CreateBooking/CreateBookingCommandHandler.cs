@@ -19,7 +19,7 @@ public class CreateBookingCommandHandler
 public class CreateBookingResult
 {
     public bool IsSuccess { get; set; }
-    public int BookingId { get; set; }
+    public Guid BookingId { get; set; }
     public string? Error { get; set; }
 }
 
