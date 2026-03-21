@@ -59,7 +59,7 @@ namespace Booking.Application.Users.Commands.RegisterUser
     public class RegisterUserResult
     {
         public bool IsSuccess { get; set; }
-        public int UserId { get; set; }
+        public Guid UserId { get; set; }
         public string? Error { get; set; }
 
     }
