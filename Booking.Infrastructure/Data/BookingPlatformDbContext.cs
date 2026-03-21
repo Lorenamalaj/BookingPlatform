@@ -1,10 +1,11 @@
-﻿using Microsoft.EntityFrameworkCore;
-using Booking.Domain.Users;
+﻿using Booking.Domain.Addresses;
+using Booking.Domain.OwnerProfiles;
+using Booking.Domain.RefreshTokens;
+using Booking.Domain.Reviews;
 using Booking.Domain.Roles;
 using Booking.Domain.UserRoles;
-using Booking.Domain.OwnerProfiles;
-using Booking.Domain.Addresses;
-using Booking.Domain.Reviews;
+using Booking.Domain.Users;
+using Microsoft.EntityFrameworkCore;
 using BookingEntity = Booking.Domain.Bookings.Booking;
 using PropertyEntity = Booking.Domain.Properties.Property;
 
@@ -12,6 +13,7 @@ namespace Booking.Infrastructure.Data
 {
     public class BookingPlatformDbContext : DbContext
     {
+        public DbSet<RefreshToken> RefreshTokens { get; set; }
         public BookingPlatformDbContext(DbContextOptions<BookingPlatformDbContext> options)
             : base(options)
         {
@@ -272,6 +274,31 @@ namespace Booking.Infrastructure.Data
                     .HasForeignKey(r => r.GuestId)
                     .OnDelete(DeleteBehavior.Restrict);
 
+            });
+
+            // ✅ RefreshToken Configuration
+            modelBuilder.Entity<RefreshToken>(entity =>
+            {
+                entity.ToTable("RefreshTokens");
+                entity.HasKey(rt => rt.Id);
+
+                entity.Property(rt => rt.Token)
+                    .IsRequired()
+                    .HasMaxLength(500);
+
+                entity.Property(rt => rt.ExpiresAt)
+                    .IsRequired();
+
+                entity.Property(rt => rt.CreatedAt)
+                    .IsRequired();
+
+                entity.HasIndex(rt => rt.Token)
+                    .IsUnique();
+
+                entity.HasOne<User>()
+                    .WithMany()
+                    .HasForeignKey(rt => rt.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
         }
     }
