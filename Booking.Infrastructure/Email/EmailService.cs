@@ -10,7 +10,6 @@ public class EmailService
 
 	public EmailService(IConfiguration configuration)
 	{
-		// Këtë "SendGridApiKey" do ta shtojmë te appsettings.json
 		_apiKey = configuration["SendGrid:ApiKey"];
 	}
 
