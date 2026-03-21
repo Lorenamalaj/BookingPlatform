@@ -1,6 +1,6 @@
+using Booking.Application.Bookings.Commands.CancelBooking;
 using Booking.Application.Bookings.Commands.ConfirmBooking;
 using Booking.Application.Bookings.Commands.CreateBooking;
-using Booking.Infrastructure.Email;
 using Booking.Application.Bookings.Queries.GetAllBookings;
 using Booking.Application.Bookings.Queries.GetBookingById;
 using Booking.Application.Properties.Commands.ApproveProperty;
@@ -16,11 +16,21 @@ using Booking.Application.Reviews.Commands.UpdateReview;
 using Booking.Application.Reviews.Queries.GetReviewById;
 using Booking.Application.Reviews.Queries.GetReviewsByProperty;
 using Booking.Application.Users.Commands.LoginUser;
+using Booking.Application.Users.Queries.GetUser;
+using Booking.Infrastructure.Authentication;
 using Booking.Infrastructure.Data;
+using Booking.Infrastructure.Email;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using System.Security.Claims;
+using System.Text;
 using System.Text.Json.Serialization;
+using DotNetEnv;
+
+Env.Load();
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -32,12 +42,9 @@ builder.Services.AddDbContext<BookingPlatformDbContext>(options =>
 builder.Services.AddControllers()
     .AddJsonOptions(opts =>
     {
-        // Allow trailing commas in incoming JSON bodies (lenient parsing)
         opts.JsonSerializerOptions.AllowTrailingCommas = true;
     });
 
-// Also configure minimal API (RequestDelegateFactory) JSON options so body binding
-// for MapPost/MapGet uses the same lenient settings.
 builder.Services.ConfigureHttpJsonOptions(opts =>
 {
     opts.SerializerOptions.AllowTrailingCommas = true;
@@ -46,8 +53,41 @@ builder.Services.ConfigureHttpJsonOptions(opts =>
 // Add OpenAPI/Swagger
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddScoped<EmailService>();
 
+// Register services
+builder.Services.AddScoped<EmailService>();
+builder.Services.AddScoped<JwtService>();
+
+// Configure JWT Authentication
+var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? builder.Configuration["Jwt:Secret"];
+var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? builder.Configuration["Jwt:Issuer"];
+var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? builder.Configuration["Jwt:Audience"];
+
+
+builder.Services.AddAuthentication(options =>
+{
+    options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+})
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = jwtIssuer,
+        ValidAudience = jwtAudience,
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
+        ,
+        // Ensure the role claim from the token is recognized by ASP.NET authorization
+        RoleClaimType = ClaimTypes.Role,
+        NameClaimType = ClaimTypes.NameIdentifier
+    };
+});
+
+builder.Services.AddAuthorization();
 
 var app = builder.Build();
 
@@ -61,20 +101,18 @@ app.UseExceptionHandler(exceptionHandlerApp =>
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         context.Response.ContentType = "application/json";
 
-        // Krijojmë një objekt me detajet e error-it
         var errorResponse = new
         {
             Message = "An unexpected error occurred.",
-            ExceptionMessage = exception?.Message, // Këtu do shohësh "Cannot insert NULL..."
-            Detail = exception?.InnerException?.Message, // Këtu sheh detajet e SQL
-            StackTrace = exception?.StackTrace // Rruga ku ndodhi gabimi
+            ExceptionMessage = exception?.Message,
+            Detail = exception?.InnerException?.Message,
+            StackTrace = exception?.StackTrace
         };
 
         await context.Response.WriteAsJsonAsync(errorResponse);
     });
 });
 
-// Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
@@ -82,10 +120,10 @@ if (app.Environment.IsDevelopment())
 
 app.UseHttpsRedirection();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
-
 
 // GET /test/users
 app.MapGet("/test/users", async (BookingPlatformDbContext db) =>
@@ -95,13 +133,66 @@ app.MapGet("/test/users", async (BookingPlatformDbContext db) =>
 })
 .WithTags("Test");
 
+// GET /test/users/{id}
+app.MapGet("/test/users/{id}", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    // Extract current user ID from token
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
 
-// Endpoint-i i ri
+    var currentUserId = Guid.Parse(userIdClaim.Value);
+
+    // Check if user is Admin
+    var isAdmin = httpContext.User.IsInRole("Admin");
+
+    // ✅ Authorization: Can view only SELF or if ADMIN
+    if (currentUserId != id && !isAdmin)
+    {
+        return Results.Json(
+            new { error = "Forbidden: You can only view your own profile" },
+            statusCode: 403
+        );
+    }
+
+    // Proceed with query
+    var query = new GetUserQuery { UserId = id };
+    var handler = new GetUserQueryHandler(db);
+    var result = await handler.Handle(query);
+
+    return result.IsSuccess
+        ? Results.Ok(result.User)
+        : Results.NotFound(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// POST /test/users
+
 app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices] BookingPlatformDbContext db) =>
 {
-    // Hash the provided password to match the application's password storage format
+    // Validate roleType
+    var validRoles = new[] { "Guest", "Host", "Administrator" };
+    if (!validRoles.Contains(req.RoleType))
+    {
+        return Results.BadRequest(new { error = "Invalid role type. Must be: Guest, Host, or Administrator" });
+    }
+
+    // Check email uniqueness
+    var emailExists = await db.Users.AnyAsync(u => u.Email == req.Email);
+    if (emailExists)
+    {
+        return Results.BadRequest(new { error = "Email already exists" });
+    }
+
+    // Hash password
     var passwordHash = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(req.Password));
 
+    // Create user
     var newUser = new Booking.Domain.Users.User(
         req.FirstName,
         req.LastName,
@@ -109,16 +200,34 @@ app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices
         passwordHash
     );
 
-    // KJO ËSHTË ZGJIDHJA: Vendoset numri që vjen nga Postman
     newUser.UpdatePhoneNumber(req.PhoneNumber);
-    newUser.ProfileImageUrl = "default.png"; 
+    newUser.ProfileImageUrl = "default.png";
     newUser.isActive = true;
     newUser.CreatedAt = DateTime.UtcNow;
 
     db.Users.Add(newUser);
     await db.SaveChangesAsync();
 
-    return Results.Created($"/test/users/{newUser.Id}", newUser);
+    // ✅ MAP USER ROLES TO DB ROLES
+    string dbRoleName = req.RoleType == "Host" ? "Owner" :
+                        req.RoleType == "Administrator" ? "Admin" :
+                        req.RoleType;
+
+    var role = await db.Roles.FirstOrDefaultAsync(r => r.Name == dbRoleName);
+    if (role != null)
+    {
+        var userRole = new Booking.Domain.UserRoles.UserRole(newUser.Id, role.Id);
+        db.UserRoles.Add(userRole);
+        await db.SaveChangesAsync();
+    }
+
+    return Results.Created($"/test/users/{newUser.Id}", new
+    {
+        userId = newUser.Id,
+        email = newUser.Email,
+        role = req.RoleType,
+        message = $"User registered successfully as {req.RoleType}"
+    });
 });
 
 // GET /test/roles
@@ -144,22 +253,32 @@ app.MapGet("/test/db-connection", async (BookingPlatformDbContext db) =>
 })
 .WithTags("Test");
 
-app.MapPost("/test/login", async ([FromBody] LoginUserCommand command, [FromServices] BookingPlatformDbContext db) =>
+// POST /test/login
+app.MapPost("/test/login", async (
+    LoginUserCommand command,
+    BookingPlatformDbContext db,
+    JwtService jwtService) =>
 {
-    var handler = new LoginUserCommandHandler(db);
+    var handler = new LoginUserCommandHandler(db, jwtService);
     var result = await handler.Handle(command);
 
     if (!result.IsSuccess)
     {
-        return Results.BadRequest(result.Error);
+        return Results.BadRequest(new { error = result.Error });
     }
 
-    return Results.Ok(result);
+    return Results.Ok(new
+    {
+        token = result.Token,
+        userId = result.UserId,
+        email = result.Email,
+        roles = result.Roles
+    });
 });
 
+// POST /test/properties
 app.MapPost("/test/properties", async (CreatePropertyCommand command, BookingPlatformDbContext db) =>
 {
-    // 1. Validimi
     var validator = new CreatePropertyValidator();
     var validationResult = await validator.ValidateAsync(command);
 
@@ -168,7 +287,6 @@ app.MapPost("/test/properties", async (CreatePropertyCommand command, BookingPla
         return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
     }
 
-    // 2. Handler (now handles address logic internally)
     var handler = new CreatePropertyCommandHandler(db);
     var result = await handler.Handle(command);
 
@@ -179,8 +297,10 @@ app.MapPost("/test/properties", async (CreatePropertyCommand command, BookingPla
             propertyId = result.PropertyId
         })
         : Results.BadRequest(new { error = result.Error });
-});
+})
+.RequireAuthorization();
 
+// POST /test/addresses
 app.MapPost("/test/addresses", async ([FromBody] AddressRequest req, BookingPlatformDbContext db) =>
 {
     var newAddress = new Booking.Domain.Addresses.Address(
@@ -193,17 +313,16 @@ app.MapPost("/test/addresses", async ([FromBody] AddressRequest req, BookingPlat
     db.Addresses.Add(newAddress);
     await db.SaveChangesAsync();
 
-    // Tani kthejmë të gjithë objektin që sapo u krijua, 
-    // EF do ta ketë mbushur fushën .Id automatikisht pas SaveChanges()
     return Results.Ok(new
     {
         Message = "Adresa u krijua me sukses!",
-        AddressId = newAddress.Id, // Kjo është ajo që na duhet!
+        AddressId = newAddress.Id,
         Details = newAddress
     });
 });
 
-app.MapDelete("/test/properties/{id}", async (int id, BookingPlatformDbContext db) =>
+// DELETE /test/properties/{id}
+app.MapDelete("/test/properties/{id}", async (Guid id, BookingPlatformDbContext db) =>
 {
     var command = new DeletePropertyCommand { PropertyId = id };
     var handler = new DeletePropertyCommandHandler(db);
@@ -214,11 +333,12 @@ app.MapDelete("/test/properties/{id}", async (int id, BookingPlatformDbContext d
         : Results.BadRequest(new { error = result.Error });
 });
 
-app.MapPut("/test/properties/{id}", async (int id, UpdatePropertyCommand command, BookingPlatformDbContext db) =>
-{
-    command.PropertyId = id; // Set from route
 
-    // Validate
+// PUT /test/properties/{id}
+app.MapPut("/test/properties/{id}", async (Guid id, UpdatePropertyCommand command, BookingPlatformDbContext db) =>
+{
+    command.PropertyId = id;
+
     var validator = new UpdatePropertyValidator();
     var validationResult = await validator.ValidateAsync(command);
 
@@ -227,17 +347,17 @@ app.MapPut("/test/properties/{id}", async (int id, UpdatePropertyCommand command
         return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
     }
 
-    // Handle
     var handler = new UpdatePropertyCommandHandler(db);
     var result = await handler.Handle(command);
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Property updated successfully" })
         : Results.BadRequest(new { error = result.Error });
-});
+})
+.RequireAuthorization();
 
 // GET /test/properties/{id}
-app.MapGet("/test/properties/{id}", async (int id, BookingPlatformDbContext db) =>
+app.MapGet("/test/properties/{id}", async (Guid id, BookingPlatformDbContext db) =>
 {
     var query = new GetPropertyByIdQuery { PropertyId = id };
     var handler = new GetPropertyByIdQueryHandler(db);
@@ -246,7 +366,8 @@ app.MapGet("/test/properties/{id}", async (int id, BookingPlatformDbContext db) 
     return result.IsSuccess
         ? Results.Ok(result.Property)
         : Results.NotFound(new { error = result.Error });
-});
+})
+.RequireAuthorization();
 
 // GET /test/properties
 app.MapGet("/test/properties", async (BookingPlatformDbContext db) =>
@@ -255,11 +376,7 @@ app.MapGet("/test/properties", async (BookingPlatformDbContext db) =>
     var handler = new GetAllPropertiesQueryHandler(db);
     var result = await handler.Handle(query);
 
-    return Results.Ok(new
-    {
-        count = result.Count,
-        properties = result.Properties
-    });
+    return Results.Ok(result);
 });
 
 // GET /test/properties/search
@@ -269,6 +386,8 @@ app.MapGet("/test/properties/search", async (
     int? minGuests,
     int? maxGuests,
     bool? isApproved,
+    int? page,              
+    int? pageSize,        
     BookingPlatformDbContext db) =>
 {
     var query = new SearchPropertiesQuery
@@ -277,22 +396,34 @@ app.MapGet("/test/properties/search", async (
         PropertyType = propertyType,
         MinGuests = minGuests,
         MaxGuests = maxGuests,
-        IsApproved = isApproved
+        IsApproved = isApproved,
+        Page = page ?? 1,          
+        PageSize = pageSize ?? 10  
     };
 
     var handler = new SearchPropertiesQueryHandler(db);
     var result = await handler.Handle(query);
 
-    return Results.Ok(new
-    {
-        count = result.Count,
-        properties = result.Properties
-    });
+    return Results.Ok(result);
 });
 
+// PATCH /test/properties/{id}/approve
+app.MapPatch("/test/properties/{id}/approve", async (Guid id, BookingPlatformDbContext db) =>
+{
+    var command = new ApprovePropertyCommand { PropertyId = id };
+    var handler = new ApprovePropertyCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Property approved successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin", "Administrator"));
+
+
+// POST /test/bookings
 app.MapPost("/test/bookings", async (CreateBookingCommand command, BookingPlatformDbContext db, [FromServices] EmailService emailService) =>
 {
-    // Validate
     var validator = new CreateBookingValidator();
     var validationResult = await validator.ValidateAsync(command);
 
@@ -301,7 +432,6 @@ app.MapPost("/test/bookings", async (CreateBookingCommand command, BookingPlatfo
         return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
     }
 
-    // Handle
     var handler = new CreateBookingCommandHandler(db, emailService);
     var result = await handler.Handle(command);
 
@@ -312,31 +442,11 @@ app.MapPost("/test/bookings", async (CreateBookingCommand command, BookingPlatfo
             bookingId = result.BookingId
         })
         : Results.BadRequest(new { error = result.Error });
-});
+})
+.RequireAuthorization();
 
-app.MapPatch("/test/properties/{id}/approve", async (int id, BookingPlatformDbContext db) =>
-{
-    var command = new ApprovePropertyCommand { PropertyId = id };
-    var handler = new ApprovePropertyCommandHandler(db);
-    var result = await handler.Handle(command);
-
-    return result.IsSuccess
-        ? Results.Ok(new { message = "Property approved successfully" })
-        : Results.BadRequest(new { error = result.Error });
-});
-
-app.MapPatch("/test/bookings/{id}/confirm", async (int id, BookingPlatformDbContext db) =>
-{
-    var command = new ConfirmBookingCommand { BookingId = id };
-    var handler = new ConfirmBookingCommandHandler(db);
-    var result = await handler.Handle(command);
-
-    return result.IsSuccess
-        ? Results.Ok(new { message = "Booking confirmed successfully" })
-        : Results.BadRequest(new { error = result.Error });
-});
-
-app.MapGet("/test/bookings/{id}", async (int id, BookingPlatformDbContext db) =>
+// GET /test/bookings/{id}
+app.MapGet("/test/bookings/{id}", async (Guid id, BookingPlatformDbContext db) =>
 {
     var query = new GetBookingByIdQuery { BookingId = id };
     var handler = new GetBookingByIdQueryHandler(db);
@@ -347,21 +457,84 @@ app.MapGet("/test/bookings/{id}", async (int id, BookingPlatformDbContext db) =>
         : Results.NotFound(new { error = result.Error });
 });
 
-
-app.MapGet("/test/bookings", async (BookingPlatformDbContext db) =>
+// GET /test/bookings
+app.MapGet("/test/bookings", async (
+    int? page,
+    int? pageSize,
+    BookingPlatformDbContext db) =>
 {
-    var query = new GetAllBookingsQuery();
+    var query = new GetAllBookingsQuery
+    {
+        Page = page ?? 1,
+        PageSize = pageSize ?? 10
+    };
+
     var handler = new GetAllBookingsQueryHandler(db);
     var result = await handler.Handle(query);
 
-    return Results.Ok(new
-    {
-        count = result.Count,
-        bookings = result.Bookings
-    });
+    return Results.Ok(result);
 });
 
-// CREATE Review
+// PATCH /test/bookings/{id}/confirm
+app.MapPatch("/test/bookings/{id}/confirm", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>  
+{
+    
+    var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var command = new ConfirmBookingCommand
+    {
+        BookingId = id,
+        RequestingUserId = userId 
+    };
+
+    var handler = new ConfirmBookingCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Booking confirmed successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+app.MapPatch("/test/bookings/{id}/cancel", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    // Extract UserId from JWT token
+    var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var command = new CancelBookingCommand
+    {
+        BookingId = id,
+        RequestingUserId = userId
+    };
+
+    var handler = new CancelBookingCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Booking cancelled successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// POST /test/reviews
 app.MapPost("/test/reviews", async (CreateReviewCommand command, BookingPlatformDbContext db) =>
 {
     var validator = new CreateReviewValidator();
@@ -384,8 +557,8 @@ app.MapPost("/test/reviews", async (CreateReviewCommand command, BookingPlatform
         : Results.BadRequest(new { error = result.Error });
 });
 
-// UPDATE Review
-app.MapPut("/test/reviews/{id}", async (int id, UpdateReviewCommand command, BookingPlatformDbContext db) =>
+// PUT /test/reviews/{id}
+app.MapPut("/test/reviews/{id}", async (Guid id, UpdateReviewCommand command, BookingPlatformDbContext db) =>
 {
     command.ReviewId = id;
 
@@ -405,8 +578,8 @@ app.MapPut("/test/reviews/{id}", async (int id, UpdateReviewCommand command, Boo
         : Results.BadRequest(new { error = result.Error });
 });
 
-// DELETE Review
-app.MapDelete("/test/reviews/{id}", async (int id, BookingPlatformDbContext db) =>
+// DELETE /test/reviews/{id}
+app.MapDelete("/test/reviews/{id}", async (Guid id, BookingPlatformDbContext db) =>
 {
     var command = new DeleteReviewCommand { ReviewId = id };
     var handler = new DeleteReviewCommandHandler(db);
@@ -417,8 +590,8 @@ app.MapDelete("/test/reviews/{id}", async (int id, BookingPlatformDbContext db) 
         : Results.BadRequest(new { error = result.Error });
 });
 
-// GET Review by ID
-app.MapGet("/test/reviews/{id}", async (int id, BookingPlatformDbContext db) =>
+// GET /test/reviews/{id}
+app.MapGet("/test/reviews/{id}", async (Guid id, BookingPlatformDbContext db) =>
 {
     var query = new GetReviewByIdQuery { ReviewId = id };
     var handler = new GetReviewByIdQueryHandler(db);
@@ -429,8 +602,8 @@ app.MapGet("/test/reviews/{id}", async (int id, BookingPlatformDbContext db) =>
         : Results.NotFound(new { error = result.Error });
 });
 
-// GET Reviews by Property
-app.MapGet("/test/properties/{propertyId}/reviews", async (int propertyId, BookingPlatformDbContext db) =>
+// GET /test/properties/{propertyId}/reviews
+app.MapGet("/test/properties/{propertyId}/reviews", async (Guid propertyId, BookingPlatformDbContext db) =>
 {
     var query = new GetReviewsByPropertyQuery { PropertyId = propertyId };
     var handler = new GetReviewsByPropertyQueryHandler(db);
@@ -445,6 +618,24 @@ app.MapGet("/test/properties/{propertyId}/reviews", async (int propertyId, Booki
     });
 });
 
+// DEBUG: return current user's claims and roles
+app.MapGet("/test/me", (ClaimsPrincipal user) =>
+{
+    var roles = user.Claims.Where(c => c.Type == ClaimTypes.Role).Select(c => c.Value).ToList();
+    var claims = user.Claims.Select(c => new { c.Type, c.Value }).ToList();
+
+    return Results.Ok(new
+    {
+        IsAuthenticated = user.Identity?.IsAuthenticated ?? false,
+        AuthenticationType = user.Identity?.AuthenticationType,
+        Name = user.Identity?.Name,
+        NameIdentifier = user.FindFirst(ClaimTypes.NameIdentifier)?.Value,
+        Email = user.FindFirst(ClaimTypes.Email)?.Value,
+        Roles = roles,
+        Claims = claims
+    });
+}).RequireAuthorization();
+
 app.Run();
 
 public record UserRegistration(
@@ -452,6 +643,8 @@ public record UserRegistration(
     [property: JsonPropertyName("lastName")] string LastName,
     [property: JsonPropertyName("email")] string Email,
     [property: JsonPropertyName("password")] string Password,
-    [property: JsonPropertyName("phoneNumber")] string PhoneNumber
+    [property: JsonPropertyName("phoneNumber")] string PhoneNumber,
+    [property: JsonPropertyName("roleType")] string RoleType
 );
+
 public record AddressRequest(string Country, string City, string Street, string PostalCode);
