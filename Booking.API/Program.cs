@@ -16,10 +16,13 @@ using Booking.Application.Reviews.Commands.UpdateReview;
 using Booking.Application.Reviews.Queries.GetReviewById;
 using Booking.Application.Reviews.Queries.GetReviewsByProperty;
 using Booking.Application.Users.Commands.LoginUser;
+using Booking.Application.Users.Commands.Logout;
+using Booking.Application.Users.Commands.RefreshToken;
 using Booking.Application.Users.Queries.GetUser;
 using Booking.Infrastructure.Authentication;
 using Booking.Infrastructure.Data;
 using Booking.Infrastructure.Email;
+using DotNetEnv;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Mvc;
@@ -28,7 +31,6 @@ using Microsoft.IdentityModel.Tokens;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
-using DotNetEnv;
 
 Env.Load();
 
@@ -270,6 +272,7 @@ app.MapPost("/test/login", async (
     return Results.Ok(new
     {
         token = result.Token,
+        refreshToken = result.RefreshToken,
         userId = result.UserId,
         email = result.Email,
         roles = result.Roles
@@ -635,6 +638,44 @@ app.MapGet("/test/me", (ClaimsPrincipal user) =>
         Claims = claims
     });
 }).RequireAuthorization();
+
+// POST /test/refresh-token
+app.MapPost("/test/refresh-token", async (
+    [FromBody] RefreshTokenCommand command,
+    BookingPlatformDbContext db,
+    JwtService jwtService) =>
+{
+    var handler = new RefreshTokenCommandHandler(db, jwtService);
+    var result = await handler.Handle(command);
+
+    if (!result.IsSuccess)
+    {
+        return Results.BadRequest(new { error = result.Error });
+    }
+
+    return Results.Ok(new
+    {
+        accessToken = result.AccessToken,
+        refreshToken = result.RefreshToken
+    });
+});
+
+// POST /test/logout
+app.MapPost("/test/logout", async (
+    [FromBody] LogoutCommand command,
+    BookingPlatformDbContext db) =>
+{
+    var handler = new LogoutCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    if (!result.IsSuccess)
+    {
+        return Results.BadRequest(new { error = result.Error });
+    }
+
+    return Results.Ok(new { message = "Logged out successfully" });
+})
+.RequireAuthorization();
 
 app.Run();
 

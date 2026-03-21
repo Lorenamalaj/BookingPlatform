@@ -1,5 +1,6 @@
 ﻿using Booking.Infrastructure.Data;
 using Booking.Infrastructure.Authentication;
+using Booking.Domain.RefreshTokens;
 using Microsoft.EntityFrameworkCore;
 
 namespace Booking.Application.Users.Commands.LoginUser;
@@ -17,7 +18,6 @@ public class LoginUserCommandHandler
 
     public async Task<LoginUserResult> Handle(LoginUserCommand command)
     {
-        // Find user by email
         var user = await _context.Users
             .FirstOrDefaultAsync(u => u.Email == command.Email);
 
@@ -30,10 +30,7 @@ public class LoginUserCommandHandler
             };
         }
 
-        // Verify password (simple Base64 for now - should use BCrypt)
-        var passwordHash = Convert.ToBase64String(
-            System.Text.Encoding.UTF8.GetBytes(command.Password)
-        );
+        var passwordHash = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(command.Password));
 
         if (user.PasswordHash != passwordHash)
         {
@@ -53,19 +50,25 @@ public class LoginUserCommandHandler
                 (ur, r) => r.Name)
             .ToListAsync();
 
-        // Fallback: if no roles found but this is the seeded admin email, grant Admin role
-        if (!userRoles.Any() && string.Equals(user.Email, "admin@bookingplatform.com", StringComparison.OrdinalIgnoreCase))
-        {
-            userRoles.Add("Admin");
-        }
+        // Generate tokens
+        var accessToken = _jwtService.GenerateToken(user.Id, user.Email, userRoles);
+        var refreshToken = _jwtService.GenerateRefreshToken();
 
-        // Generate JWT token
-        var token = _jwtService.GenerateToken(user.Id, user.Email, userRoles);
+        // Save refresh token to database
+        var refreshTokenEntity = new Booking.Domain.RefreshTokens.RefreshToken(
+            user.Id,
+            refreshToken,
+            DateTime.UtcNow.AddDays(7)
+        );
+
+        _context.RefreshTokens.Add(refreshTokenEntity);
+        await _context.SaveChangesAsync();
 
         return new LoginUserResult
         {
             IsSuccess = true,
-            Token = token,
+            Token = accessToken,
+            RefreshToken = refreshToken,
             UserId = user.Id,
             Email = user.Email,
             Roles = userRoles
