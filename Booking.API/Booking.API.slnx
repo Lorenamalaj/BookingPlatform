@@ -2,7 +2,7 @@
   <Folder Name="/Solution Items/">
     <File Path=".gitignore" />
   </Folder>
-  <Project Path="../Booking.Application/Booking.Application.csproj" Id="091a5457-cbe7-4c79-b0c5-c45308584a31" />
+  <Project Path="../Booking.Application/Booking.Application.csproj" />
   <Project Path="../Booking.Domain/Booking.Domain.csproj" Id="9e3be813-6168-4829-8bbf-bed9f6658334" />
   <Project Path="../Booking.Infrastructure/Booking.Infrastructure.csproj" Id="a1c8ffa7-19c5-4073-b39e-191ef6ef6857" />
   <Project Path="Booking.API.csproj" />
