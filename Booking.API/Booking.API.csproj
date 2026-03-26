@@ -28,4 +28,8 @@
     <Folder Include="Booking.Infrastructure\Migrations\" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="wwwroot\test.html" />
+  </ItemGroup>
+
 </Project>
