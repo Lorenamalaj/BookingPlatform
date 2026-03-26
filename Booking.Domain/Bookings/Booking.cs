@@ -112,6 +112,15 @@ namespace Booking.Domain.Bookings
             CancelledOnUtc = DateTime.UtcNow;
             LastModifiedAt = DateTime.UtcNow;
         }
+        public void Expire(DateTime utcNow)
+        {
+            
+            if (this.BookingStatus == "Pending")
+            {
+                this.BookingStatus = "Expired";
+                this.LastModifiedAt = utcNow;
+            }
+        }
 
         public int GetNumberOfNights()
         {

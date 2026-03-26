@@ -41,6 +41,15 @@ public class LoginUserCommandHandler
             };
         }
 
+        if (!user.isActive)
+        {
+            return new LoginUserResult
+            {
+                IsSuccess = false,
+                Error = "Llogaria juaj është pezulluar. Ju lutem kontaktoni adminin."
+            };
+        }
+
         // Get user roles
         var userRoles = await _context.UserRoles
             .Where(ur => ur.UserId == user.Id)

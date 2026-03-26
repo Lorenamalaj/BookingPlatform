@@ -1,6 +1,5 @@
 ﻿using Booking.Infrastructure.Data;
 using Booking.Infrastructure.Email;
-using Booking.Domain.Bookings; 
 using Microsoft.EntityFrameworkCore;
 
 namespace Booking.Application.Bookings.Commands.CreateBooking;
@@ -8,20 +7,12 @@ namespace Booking.Application.Bookings.Commands.CreateBooking;
 public class CreateBookingCommandHandler
 {
     private readonly BookingPlatformDbContext _context;
-    private readonly EmailService _emailService; 
-
+    private readonly EmailService _emailService;
     public CreateBookingCommandHandler(BookingPlatformDbContext context, EmailService emailService)
     {
         _context = context;
         _emailService = emailService;
     }
-
-public class CreateBookingResult
-{
-    public bool IsSuccess { get; set; }
-    public Guid BookingId { get; set; }
-    public string? Error { get; set; }
-}
 
     public async Task<CreateBookingResult> Handle(CreateBookingCommand command)
     {
@@ -69,11 +60,11 @@ public class CreateBookingResult
         );
 
         _context.Bookings.Add(booking);
-        property.MarkAsBooked(); 
+        property.MarkAsBooked();
 
         await _context.SaveChangesAsync();
 
-        // 5. DËRGIMI I EMAIL-IT (Pasi u ruajt me sukses në DB)
+        // 5. DËRGIMI I EMAIL-IT
         try
         {
             var subject = $"Booking Confirmation #{booking.Id}";
@@ -109,7 +100,7 @@ Booking Platform Team
         }
         catch (Exception ex)
         {
-            return new CreateBookingResult { IsSuccess = false, Error = "Email Error: " + ex.Message };
+            Console.WriteLine($"Email failed: {ex.Message}");
         }
 
         return new CreateBookingResult
@@ -118,4 +109,11 @@ Booking Platform Team
             BookingId = booking.Id
         };
     }
+}
+
+public class CreateBookingResult
+{
+    public bool IsSuccess { get; set; }
+    public Guid BookingId { get; set; }
+    public string? Error { get; set; }
 }
