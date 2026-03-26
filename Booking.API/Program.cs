@@ -1,6 +1,7 @@
 using Booking.Application.Bookings.Commands.CancelBooking;
 using Booking.Application.Bookings.Commands.ConfirmBooking;
 using Booking.Application.Bookings.Commands.CreateBooking;
+using Booking.Application.Bookings.Commands.RejectBooking;
 using Booking.Application.Bookings.Queries.GetAllBookings;
 using Booking.Application.Bookings.Queries.GetBookingById;
 using Booking.Application.Bookings.Queries.GetBookingsForMyProperties;
@@ -19,9 +20,11 @@ using Booking.Application.Reviews.Commands.UpdateReview;
 using Booking.Application.Reviews.Queries.GetReviewById;
 using Booking.Application.Reviews.Queries.GetReviewsByProperty;
 using Booking.Application.Users.Commands.ChangePassword;
+using Booking.Application.Users.Commands.DeleteUser;
 using Booking.Application.Users.Commands.LoginUser;
 using Booking.Application.Users.Commands.Logout;
 using Booking.Application.Users.Commands.RefreshToken;
+using Booking.Application.Users.Commands.SuspendUser;
 using Booking.Application.Users.Commands.UpdateUserProfile;
 using Booking.Application.Users.Queries.GetUser;
 using Booking.Infrastructure.Authentication;
@@ -36,6 +39,8 @@ using Microsoft.IdentityModel.Tokens;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
+using Booking.API.Services;
+using Booking.API.Hubs;
 
 Env.Load();
 
@@ -64,6 +69,11 @@ builder.Services.AddEndpointsApiExplorer();
 // Register services
 builder.Services.AddScoped<EmailService>();
 builder.Services.AddScoped<JwtService>();
+
+//SignalR
+builder.Services.AddSignalR();
+builder.Services.AddScoped<NotificationService>();
+
 
 // Configure JWT Authentication
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? builder.Configuration["Jwt:Secret"];
@@ -96,6 +106,15 @@ builder.Services.AddAuthentication(options =>
 
 builder.Services.AddAuthorization();
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
 var app = builder.Build();
 
 app.UseExceptionHandler(exceptionHandlerApp =>
@@ -125,12 +144,16 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
+app.UseStaticFiles();
 
+app.UseHttpsRedirection();
+app.UseCors("AllowAll");
 app.UseAuthentication();
 app.UseAuthorization();
-
 app.MapControllers();
+app.MapHub<NotificationHub>("/notificationHub");
+
+
 
 // GET /test/users
 app.MapGet("/test/users", async (BookingPlatformDbContext db) =>
@@ -179,8 +202,10 @@ app.MapGet("/test/users/{id}", async (
 .RequireAuthorization();
 
 // POST /test/users
-
-app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices] BookingPlatformDbContext db) =>
+app.MapPost("/test/users", async (
+    [FromBody] UserRegistration req,
+    [FromServices] BookingPlatformDbContext db,
+    NotificationService notificationService) =>
 {
     // Validate roleType
     var validRoles = new[] { "Guest", "Host", "Administrator" };
@@ -215,7 +240,7 @@ app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices
     db.Users.Add(newUser);
     await db.SaveChangesAsync();
 
-    // ✅ MAP USER ROLES TO DB ROLES
+    // MAP USER ROLES TO DB ROLES
     string dbRoleName = req.RoleType == "Host" ? "Owner" :
                         req.RoleType == "Administrator" ? "Admin" :
                         req.RoleType;
@@ -228,6 +253,12 @@ app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices
         await db.SaveChangesAsync();
     }
 
+    // SEND NOTIFICATION!
+    await notificationService.SendToUser(
+        newUser.Id,
+        $"🎉 Welcome {req.FirstName}! Your account as {req.RoleType} has been created successfully!"
+    );
+
     return Results.Created($"/test/users/{newUser.Id}", new
     {
         userId = newUser.Id,
@@ -236,7 +267,6 @@ app.MapPost("/test/users", async ([FromBody] UserRegistration req, [FromServices
         message = $"User registered successfully as {req.RoleType}"
     });
 });
-
 // GET /test/roles
 app.MapGet("/test/roles", async (BookingPlatformDbContext db) =>
 {
@@ -264,7 +294,8 @@ app.MapGet("/test/db-connection", async (BookingPlatformDbContext db) =>
 app.MapPost("/test/login", async (
     LoginUserCommand command,
     BookingPlatformDbContext db,
-    JwtService jwtService) =>
+    JwtService jwtService,
+    NotificationService notificationService) =>
 {
     var handler = new LoginUserCommandHandler(db, jwtService);
     var result = await handler.Handle(command);
@@ -273,6 +304,11 @@ app.MapPost("/test/login", async (
     {
         return Results.BadRequest(new { error = result.Error });
     }
+
+    await notificationService.SendToUser(
+        result.UserId,
+        $"You logged in successfully."
+    );
 
     return Results.Ok(new
     {
@@ -430,7 +466,11 @@ app.MapPatch("/test/properties/{id}/approve", async (Guid id, BookingPlatformDbC
 
 
 // POST /test/bookings
-app.MapPost("/test/bookings", async (CreateBookingCommand command, BookingPlatformDbContext db, [FromServices] EmailService emailService) =>
+app.MapPost("/test/bookings", async (
+    CreateBookingCommand command,
+    BookingPlatformDbContext db,
+    EmailService emailService,
+    NotificationService notificationService) => 
 {
     var validator = new CreateBookingValidator();
     var validationResult = await validator.ValidateAsync(command);
@@ -439,10 +479,21 @@ app.MapPost("/test/bookings", async (CreateBookingCommand command, BookingPlatfo
     {
         return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
     }
-
     var handler = new CreateBookingCommandHandler(db, emailService);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess)
+    {
+        var property = await db.Properties.FindAsync(command.PropertyId);
+        if (property != null)
+        {
+            await notificationService.NotifyBookingCreated(
+                property.OwnerId,
+                result.BookingId,
+                property.Name
+            );
+        }
+    }
     return result.IsSuccess
         ? Results.Created($"/test/bookings/{result.BookingId}", new
         {
@@ -487,9 +538,9 @@ app.MapGet("/test/bookings", async (
 app.MapPatch("/test/bookings/{id}/confirm", async (
     Guid id,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>  
+    HttpContext httpContext,
+    NotificationService notificationService) =>
 {
-    
     var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
     {
@@ -501,11 +552,27 @@ app.MapPatch("/test/bookings/{id}/confirm", async (
     var command = new ConfirmBookingCommand
     {
         BookingId = id,
-        RequestingUserId = userId 
+        RequestingUserId = userId
     };
 
     var handler = new ConfirmBookingCommandHandler(db);
     var result = await handler.Handle(command);
+
+    // If confirmed, notify guest
+    if (result.IsSuccess)
+    {
+        var booking = await db.Bookings
+            .Include(b => b.Property)
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking != null && booking.Property != null)
+        {
+            await notificationService.NotifyBookingConfirmed(
+                booking.GuestId,
+                booking.Property.Name
+            );
+        }
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Booking confirmed successfully" })
@@ -541,6 +608,69 @@ app.MapPatch("/test/bookings/{id}/cancel", async (
         : Results.BadRequest(new { error = result.Error });
 })
 .RequireAuthorization();
+
+
+app.MapPatch("/test/bookings/{id}/reject", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var command = new RejectBookingCommand
+    {
+        BookingId = id,
+        RequestingUserId = userId
+    };
+
+    var handler = new RejectBookingCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Booking rejected successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization(policy => policy.RequireRole("Owner"));
+
+
+app.MapPost("/test/bookings/expire", async (BookingPlatformDbContext db) =>
+{
+    var now = DateTime.UtcNow;
+    var cutoffTime = now.AddHours(-24); 
+
+    //të gjitha rezervimet Pending që janë krijuar më shumë se 24 orë më parë
+    var expiredBookings = await db.Bookings
+        .Where(b => b.BookingStatus == "Pending" && b.CreatedOnUtc < cutoffTime)
+        .ToListAsync();
+
+    if (!expiredBookings.Any())
+    {
+        return Results.Ok(new { message = "Nuk u gjet asnjë rezervim për të skaduar." });
+    }
+
+    
+    foreach (var booking in expiredBookings)
+    {
+        booking.Expire(now);
+    }
+
+    
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new
+    {
+        message = "Pastrimi u krye me sukses!",
+        expiredCount = expiredBookings.Count
+    });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
 
 // POST /test/reviews
 app.MapPost("/test/reviews", async (CreateReviewCommand command, BookingPlatformDbContext db) =>
@@ -717,11 +847,13 @@ app.MapPut("/test/users/profile", async (
 })
 .RequireAuthorization();
 
+
 // POST /test/users/change-password
 app.MapPost("/test/users/change-password", async (
     [FromBody] ChangePasswordCommand command,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    NotificationService notificationService) => 
 {
     // Extract userId from token
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
@@ -745,6 +877,15 @@ app.MapPost("/test/users/change-password", async (
 
     var handler = new ChangePasswordCommandHandler(db);
     var result = await handler.Handle(command);
+
+    //Send notification
+    if (result.IsSuccess)
+    {
+        await notificationService.SendToUser(
+            currentUserId,
+            "Your password was changed successfully. If this wasn't you, contact support immediately!"
+        );
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Password changed successfully" })
@@ -842,6 +983,87 @@ app.MapGet("/test/bookings/my-properties-bookings", async (
     return Results.Ok(result);
 })
 .RequireAuthorization();
+
+// PATCH /test/users/{id}/suspend
+app.MapPatch("/test/users/{id}/suspend", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var command = new SuspendUserCommand { UserId = id };
+    var handler = new SuspendUserCommandHandler(db);
+    var result = await handler.Handle(command, httpContext.User);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "User suspended successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapPatch("/test/users/{id}/activate", async (Guid id, BookingPlatformDbContext db) =>
+{
+    var user = await db.Users.FindAsync(id);
+    if (user == null) return Results.NotFound();
+
+    user.isActive = true; 
+    await db.SaveChangesAsync();
+
+    return Results.Ok(new { message = "User activated successfully" });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+app.MapDelete("/test/users/{id}", async (Guid id, BookingPlatformDbContext db) =>
+{
+    var command = new DeleteUserCommand { UserId = id };
+    var handler = new DeleteUserCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.NoContent()
+        : Results.NotFound(new { error = result.Error });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
+
+// POST /test/bookings/send-reminders
+app.MapPost("/test/bookings/send-reminders", async (
+    BookingPlatformDbContext db,
+    NotificationService notificationService) =>
+{
+    var tomorrow = DateTime.UtcNow.AddDays(1).Date;
+    var dayAfterTomorrow = tomorrow.AddDays(1);
+
+    // Find all confirmed bookings starting tomorrow
+    var upcomingBookings = await db.Bookings
+        .Include(b => b.Property)
+        .Where(b => b.BookingStatus == "Confirmed" &&
+                    b.StartDate >= tomorrow &&
+                    b.StartDate < dayAfterTomorrow)
+        .ToListAsync();
+
+    if (!upcomingBookings.Any())
+    {
+        return Results.Ok(new { message = "No upcoming bookings to remind", count = 0 });
+    }
+
+    // Send reminder to each guest
+    foreach (var booking in upcomingBookings)
+    {
+        if (booking.Property != null)
+        {
+            await notificationService.SendToUser(
+                booking.GuestId,
+                $"⏰ Reminder: Your booking at '{booking.Property.Name}' starts tomorrow! Check-in time: {booking.Property.CheckInTime}"
+            );
+        }
+    }
+
+    return Results.Ok(new
+    {
+        message = "Reminders sent successfully",
+        count = upcomingBookings.Count
+    });
+})
+.RequireAuthorization(policy => policy.RequireRole("Admin"));
 
 app.Run();
 

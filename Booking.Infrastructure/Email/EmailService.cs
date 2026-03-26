@@ -6,16 +6,19 @@ namespace Booking.Infrastructure.Email;
 
 public class EmailService
 {
-	private readonly string _apiKey;
+    private readonly IConfiguration _configuration; 
 
-	public EmailService(IConfiguration configuration)
-	{
-		_apiKey = configuration["SendGrid:ApiKey"];
-	}
+    public EmailService(IConfiguration configuration)
+    {
+        _configuration = configuration;  
+    }
 
     public async Task SendEmailAsync(string toEmail, string subject, string body)
     {
-        if (string.IsNullOrWhiteSpace(_apiKey))
+        var apiKey = Environment.GetEnvironmentVariable("SENDGRID_API_KEY")
+                    ?? _configuration["SendGrid:ApiKey"];
+
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
             Console.WriteLine("SendGrid API key is not configured. Set SendGrid:ApiKey in appsettings.json or environment variables.");
             return;
@@ -23,16 +26,17 @@ public class EmailService
 
         try
         {
-            var client = new SendGridClient(_apiKey);
+            var client = new SendGridClient(apiKey);
             var from = new EmailAddress("lorenamalaj7@gmail.com", "Lorena");
             var to = new EmailAddress(toEmail);
             var msg = MailHelper.CreateSingleEmail(from, to, subject, body, body);
 
             var response = await client.SendEmailAsync(msg);
 
-            // Log status and response body for diagnostics
+         
             var respBody = await response.Body.ReadAsStringAsync();
             Console.WriteLine($"SendGrid response: {(int)response.StatusCode} {response.StatusCode}");
+
             if (!string.IsNullOrWhiteSpace(respBody))
                 Console.WriteLine($"SendGrid response body: {respBody}");
 

@@ -1,0 +1,34 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>SignalR Test</title>
+</head>
+<body>
+    <h1>SignalR Test</h1>
+    <div id="status">Connecting...</div>
+    <div id="messages"></div>
+
+    <script src="https://unpkg.com/@microsoft/signalr@8.0.0/dist/browser/signalr.min.js"></script>
+    <script>
+        const connection = new signalR.HubConnectionBuilder()
+            .withUrl("http://localhost:5203/notificationHub")
+            .build();
+
+        connection.on("ReceiveNotification", (data) => {
+            document.getElementById("messages").innerHTML +=
+                `<p style="color:green">🔔 ${new Date().toLocaleTimeString()}: ${data.message}</p>`;
+        });
+
+        connection.start()
+            .then(() => {
+                document.getElementById("status").innerHTML = "✅ Connected to SignalR!";
+                document.getElementById("status").style.color = "green";
+            })
+            .catch(err => {
+                document.getElementById("status").innerHTML = "❌ Error: " + err;
+                document.getElementById("status").style.color = "red";
+                console.error(err);
+            });
+    </script>
+</body>
+</html>
