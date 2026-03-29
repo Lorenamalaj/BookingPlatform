@@ -69,17 +69,17 @@ builder.Services.AddEndpointsApiExplorer();
 // Register services
 builder.Services.AddScoped<EmailService>();
 builder.Services.AddScoped<JwtService>();
-
-//SignalR
+builder.Services.AddSingleton<KafkaProducerService>();  // ✅ Kafka Producer
 builder.Services.AddSignalR();
 builder.Services.AddScoped<NotificationService>();
 
+// Add static files support
+builder.Services.AddDirectoryBrowser();
 
 // Configure JWT Authentication
 var jwtSecret = Environment.GetEnvironmentVariable("JWT_SECRET") ?? builder.Configuration["Jwt:Secret"];
 var jwtIssuer = Environment.GetEnvironmentVariable("JWT_ISSUER") ?? builder.Configuration["Jwt:Issuer"];
 var jwtAudience = Environment.GetEnvironmentVariable("JWT_AUDIENCE") ?? builder.Configuration["Jwt:Audience"];
-
 
 builder.Services.AddAuthentication(options =>
 {
@@ -96,9 +96,7 @@ builder.Services.AddAuthentication(options =>
         ValidateIssuerSigningKey = true,
         ValidIssuer = jwtIssuer,
         ValidAudience = jwtAudience,
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret))
-        ,
-        // Ensure the role claim from the token is recognized by ASP.NET authorization
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSecret)),
         RoleClaimType = ClaimTypes.Role,
         NameClaimType = ClaimTypes.NameIdentifier
     };
@@ -115,6 +113,7 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader();
     });
 });
+
 var app = builder.Build();
 
 app.UseExceptionHandler(exceptionHandlerApp =>
@@ -145,15 +144,12 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseStaticFiles();
-
 app.UseHttpsRedirection();
-app.UseCors("AllowAll");
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseCors("AllowAll");
 app.MapControllers();
 app.MapHub<NotificationHub>("/notificationHub");
-
-
 
 // GET /test/users
 app.MapGet("/test/users", async (BookingPlatformDbContext db) =>
@@ -169,7 +165,6 @@ app.MapGet("/test/users/{id}", async (
     BookingPlatformDbContext db,
     HttpContext httpContext) =>
 {
-    // Extract current user ID from token
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
     {
@@ -177,11 +172,8 @@ app.MapGet("/test/users/{id}", async (
     }
 
     var currentUserId = Guid.Parse(userIdClaim.Value);
-
-    // Check if user is Admin
     var isAdmin = httpContext.User.IsInRole("Admin");
 
-    // ✅ Authorization: Can view only SELF or if ADMIN
     if (currentUserId != id && !isAdmin)
     {
         return Results.Json(
@@ -190,7 +182,6 @@ app.MapGet("/test/users/{id}", async (
         );
     }
 
-    // Proceed with query
     var query = new GetUserQuery { UserId = id };
     var handler = new GetUserQueryHandler(db);
     var result = await handler.Handle(query);
@@ -201,30 +192,26 @@ app.MapGet("/test/users/{id}", async (
 })
 .RequireAuthorization();
 
-// POST /test/users
+// POST /test/users - USER REGISTRATION
 app.MapPost("/test/users", async (
     [FromBody] UserRegistration req,
     [FromServices] BookingPlatformDbContext db,
-    NotificationService notificationService) =>
+    KafkaProducerService kafkaProducer) => 
 {
-    // Validate roleType
     var validRoles = new[] { "Guest", "Host", "Administrator" };
     if (!validRoles.Contains(req.RoleType))
     {
         return Results.BadRequest(new { error = "Invalid role type. Must be: Guest, Host, or Administrator" });
     }
 
-    // Check email uniqueness
     var emailExists = await db.Users.AnyAsync(u => u.Email == req.Email);
     if (emailExists)
     {
         return Results.BadRequest(new { error = "Email already exists" });
     }
 
-    // Hash password
     var passwordHash = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(req.Password));
 
-    // Create user
     var newUser = new Booking.Domain.Users.User(
         req.FirstName,
         req.LastName,
@@ -240,7 +227,6 @@ app.MapPost("/test/users", async (
     db.Users.Add(newUser);
     await db.SaveChangesAsync();
 
-    // MAP USER ROLES TO DB ROLES
     string dbRoleName = req.RoleType == "Host" ? "Owner" :
                         req.RoleType == "Administrator" ? "Admin" :
                         req.RoleType;
@@ -253,10 +239,20 @@ app.MapPost("/test/users", async (
         await db.SaveChangesAsync();
     }
 
-    // SEND NOTIFICATION!
-    await notificationService.SendToUser(
+    // KAFKA EVENT
+    await kafkaProducer.SendEventAsync(
+        "UserRegistered",
         newUser.Id,
-        $"🎉 Welcome {req.FirstName}! Your account as {req.RoleType} has been created successfully!"
+        new
+        {
+            UserId = newUser.Id,
+            Email = newUser.Email,
+            FirstName = newUser.FirstName,
+            LastName = newUser.LastName,
+            Role = req.RoleType,
+            PhoneNumber = newUser.PhoneNumber,
+            RegisteredAt = newUser.CreatedAt
+        }
     );
 
     return Results.Created($"/test/users/{newUser.Id}", new
@@ -267,6 +263,7 @@ app.MapPost("/test/users", async (
         message = $"User registered successfully as {req.RoleType}"
     });
 });
+
 // GET /test/roles
 app.MapGet("/test/roles", async (BookingPlatformDbContext db) =>
 {
@@ -294,8 +291,7 @@ app.MapGet("/test/db-connection", async (BookingPlatformDbContext db) =>
 app.MapPost("/test/login", async (
     LoginUserCommand command,
     BookingPlatformDbContext db,
-    JwtService jwtService,
-    NotificationService notificationService) =>
+    JwtService jwtService) =>
 {
     var handler = new LoginUserCommandHandler(db, jwtService);
     var result = await handler.Handle(command);
@@ -304,11 +300,6 @@ app.MapPost("/test/login", async (
     {
         return Results.BadRequest(new { error = result.Error });
     }
-
-    await notificationService.SendToUser(
-        result.UserId,
-        $"You logged in successfully."
-    );
 
     return Results.Ok(new
     {
@@ -320,8 +311,11 @@ app.MapPost("/test/login", async (
     });
 });
 
-// POST /test/properties
-app.MapPost("/test/properties", async (CreatePropertyCommand command, BookingPlatformDbContext db) =>
+// POST /test/properties - PROPERTY CREATION
+app.MapPost("/test/properties", async (
+    CreatePropertyCommand command,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) => 
 {
     var validator = new CreatePropertyValidator();
     var validationResult = await validator.ValidateAsync(command);
@@ -333,6 +327,29 @@ app.MapPost("/test/properties", async (CreatePropertyCommand command, BookingPla
 
     var handler = new CreatePropertyCommandHandler(db);
     var result = await handler.Handle(command);
+
+    if (result.IsSuccess)
+    {
+        var property = await db.Properties.FindAsync(result.PropertyId);
+        if (property != null)
+        {
+            // KAFKA EVENT
+            await kafkaProducer.SendEventAsync(
+                "PropertyCreated",
+                property.Id,
+                new
+                {
+                    PropertyId = property.Id,
+                    PropertyName = property.Name,
+                    PropertyType = property.PropertyType,
+                    OwnerId = property.OwnerId,
+                    MaxGuests = property.MaxGuests,
+                    IsApproved = property.IsApproved,
+                    CreatedAt = property.CreatedAt
+                }
+            );
+        }
+    }
 
     return result.IsSuccess
         ? Results.Created($"/test/properties/{result.PropertyId}", new
@@ -377,9 +394,12 @@ app.MapDelete("/test/properties/{id}", async (Guid id, BookingPlatformDbContext 
         : Results.BadRequest(new { error = result.Error });
 });
 
-
 // PUT /test/properties/{id}
-app.MapPut("/test/properties/{id}", async (Guid id, UpdatePropertyCommand command, BookingPlatformDbContext db) =>
+app.MapPut("/test/properties/{id}", async (
+    Guid id,
+    UpdatePropertyCommand command,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) => 
 {
     command.PropertyId = id;
 
@@ -393,6 +413,21 @@ app.MapPut("/test/properties/{id}", async (Guid id, UpdatePropertyCommand comman
 
     var handler = new UpdatePropertyCommandHandler(db);
     var result = await handler.Handle(command);
+
+    if (result.IsSuccess)
+    {
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "PropertyUpdated",
+            id,
+            new
+            {
+                PropertyId = id,
+                UpdatedFields = command,
+                UpdatedAt = DateTime.UtcNow
+            }
+        );
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Property updated successfully" })
@@ -430,8 +465,8 @@ app.MapGet("/test/properties/search", async (
     int? minGuests,
     int? maxGuests,
     bool? isApproved,
-    int? page,              
-    int? pageSize,        
+    int? page,
+    int? pageSize,
     BookingPlatformDbContext db) =>
 {
     var query = new SearchPropertiesQuery
@@ -441,8 +476,8 @@ app.MapGet("/test/properties/search", async (
         MinGuests = minGuests,
         MaxGuests = maxGuests,
         IsApproved = isApproved,
-        Page = page ?? 1,          
-        PageSize = pageSize ?? 10  
+        Page = page ?? 1,
+        PageSize = pageSize ?? 10
     };
 
     var handler = new SearchPropertiesQueryHandler(db);
@@ -451,12 +486,35 @@ app.MapGet("/test/properties/search", async (
     return Results.Ok(result);
 });
 
-// PATCH /test/properties/{id}/approve
-app.MapPatch("/test/properties/{id}/approve", async (Guid id, BookingPlatformDbContext db) =>
+// PATCH /test/properties/{id}/approve - PROPERTY APPROVAL
+app.MapPatch("/test/properties/{id}/approve", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) => 
 {
     var command = new ApprovePropertyCommand { PropertyId = id };
     var handler = new ApprovePropertyCommandHandler(db);
     var result = await handler.Handle(command);
+
+    if (result.IsSuccess)
+    {
+        var property = await db.Properties.FindAsync(id);
+        if (property != null)
+        {
+            // KAFKA EVENT
+            await kafkaProducer.SendEventAsync(
+                "PropertyApproved",
+                id,
+                new
+                {
+                    PropertyId = id,
+                    PropertyName = property.Name,
+                    OwnerId = property.OwnerId,
+                    ApprovedAt = DateTime.UtcNow
+                }
+            );
+        }
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Property approved successfully" })
@@ -464,13 +522,13 @@ app.MapPatch("/test/properties/{id}/approve", async (Guid id, BookingPlatformDbC
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin", "Administrator"));
 
-
-// POST /test/bookings
+// POST /test/bookings - CREATE BOOKING
 app.MapPost("/test/bookings", async (
     CreateBookingCommand command,
     BookingPlatformDbContext db,
-    EmailService emailService,
-    NotificationService notificationService) => 
+    [FromServices] EmailService emailService,
+    NotificationService notificationService,
+    KafkaProducerService kafkaProducer) =>  
 {
     var validator = new CreateBookingValidator();
     var validationResult = await validator.ValidateAsync(command);
@@ -479,6 +537,7 @@ app.MapPost("/test/bookings", async (
     {
         return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
     }
+
     var handler = new CreateBookingCommandHandler(db, emailService);
     var result = await handler.Handle(command);
 
@@ -487,13 +546,33 @@ app.MapPost("/test/bookings", async (
         var property = await db.Properties.FindAsync(command.PropertyId);
         if (property != null)
         {
+            // SignalR notification
             await notificationService.NotifyBookingCreated(
                 property.OwnerId,
                 result.BookingId,
                 property.Name
             );
+
+            // KAFKA EVENT
+            await kafkaProducer.SendEventAsync(
+                "BookingCreated",
+                result.BookingId,
+                new
+                {
+                    BookingId = result.BookingId,
+                    PropertyId = command.PropertyId,
+                    PropertyName = property.Name,
+                    GuestId = command.GuestId,
+                    StartDate = command.StartDate,
+                    EndDate = command.EndDate,
+                    GuestCount = command.GuestCount,
+                    TotalPrice = command.PriceForPeriod + command.CleaningFee + command.AmenitiesUpCharge,
+                    CreatedAt = DateTime.UtcNow
+                }
+            );
         }
     }
+
     return result.IsSuccess
         ? Results.Created($"/test/bookings/{result.BookingId}", new
         {
@@ -534,12 +613,13 @@ app.MapGet("/test/bookings", async (
     return Results.Ok(result);
 });
 
-// PATCH /test/bookings/{id}/confirm
+// PATCH /test/bookings/{id}/confirm - CONFIRM BOOKING
 app.MapPatch("/test/bookings/{id}/confirm", async (
     Guid id,
     BookingPlatformDbContext db,
     HttpContext httpContext,
-    NotificationService notificationService) =>
+    NotificationService notificationService,
+    KafkaProducerService kafkaProducer) =>  
 {
     var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
@@ -558,7 +638,6 @@ app.MapPatch("/test/bookings/{id}/confirm", async (
     var handler = new ConfirmBookingCommandHandler(db);
     var result = await handler.Handle(command);
 
-    // If confirmed, notify guest
     if (result.IsSuccess)
     {
         var booking = await db.Bookings
@@ -567,9 +646,25 @@ app.MapPatch("/test/bookings/{id}/confirm", async (
 
         if (booking != null && booking.Property != null)
         {
+            // SignalR notification
             await notificationService.NotifyBookingConfirmed(
                 booking.GuestId,
                 booking.Property.Name
+            );
+
+            // KAFKA EVENT 
+            await kafkaProducer.SendEventAsync(
+                "BookingConfirmed",
+                id,
+                new
+                {
+                    BookingId = id,
+                    PropertyId = booking.PropertyId,
+                    PropertyName = booking.Property.Name,
+                    GuestId = booking.GuestId,
+                    ConfirmedBy = userId,
+                    ConfirmedAt = DateTime.UtcNow
+                }
             );
         }
     }
@@ -580,12 +675,13 @@ app.MapPatch("/test/bookings/{id}/confirm", async (
 })
 .RequireAuthorization();
 
+// PATCH /test/bookings/{id}/cancel - CANCEL BOOKING
 app.MapPatch("/test/bookings/{id}/cancel", async (
     Guid id,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    KafkaProducerService kafkaProducer) =>  
 {
-    // Extract UserId from JWT token
     var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
     {
@@ -603,17 +699,44 @@ app.MapPatch("/test/bookings/{id}/cancel", async (
     var handler = new CancelBookingCommandHandler(db);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess)
+    {
+        var booking = await db.Bookings
+            .Include(b => b.Property)
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking != null && booking.Property != null)
+        {
+            // KAFKA EVENT 
+            await kafkaProducer.SendEventAsync(
+                "BookingCancelled",
+                id,
+                new
+                {
+                    BookingId = id,
+                    PropertyId = booking.PropertyId,
+                    PropertyName = booking.Property.Name,
+                    GuestId = booking.GuestId,
+                    CancelledBy = userId,
+                    CancelledAt = DateTime.UtcNow
+                }
+            );
+        }
+    }
+
     return result.IsSuccess
         ? Results.Ok(new { message = "Booking cancelled successfully" })
         : Results.BadRequest(new { error = result.Error });
 })
 .RequireAuthorization();
 
-
+// PATCH /test/bookings/{id}/reject - REJECT BOOKING
 app.MapPatch("/test/bookings/{id}/reject", async (
     Guid id,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    NotificationService notificationService,
+    KafkaProducerService kafkaProducer) => 
 {
     var userIdClaim = httpContext.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
@@ -632,19 +755,49 @@ app.MapPatch("/test/bookings/{id}/reject", async (
     var handler = new RejectBookingCommandHandler(db);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess)
+    {
+        var booking = await db.Bookings
+            .Include(b => b.Property)
+            .FirstOrDefaultAsync(b => b.Id == id);
+
+        if (booking != null && booking.Property != null)
+        {
+            // SignalR notification
+            await notificationService.NotifyBookingRejected(
+                booking.GuestId,
+                booking.Property.Name
+            );
+
+            // KAFKA EVENT 
+            await kafkaProducer.SendEventAsync(
+                "BookingRejected",
+                id,
+                new
+                {
+                    BookingId = id,
+                    PropertyId = booking.PropertyId,
+                    PropertyName = booking.Property.Name,
+                    GuestId = booking.GuestId,
+                    RejectedBy = userId,
+                    RejectedAt = DateTime.UtcNow
+                }
+            );
+        }
+    }
+
     return result.IsSuccess
         ? Results.Ok(new { message = "Booking rejected successfully" })
         : Results.BadRequest(new { error = result.Error });
 })
-.RequireAuthorization(policy => policy.RequireRole("Owner"));
+.RequireAuthorization();
 
-
+// POST /test/bookings/expire
 app.MapPost("/test/bookings/expire", async (BookingPlatformDbContext db) =>
 {
     var now = DateTime.UtcNow;
-    var cutoffTime = now.AddHours(-24); 
+    var cutoffTime = now.AddHours(-24);
 
-    //të gjitha rezervimet Pending që janë krijuar më shumë se 24 orë më parë
     var expiredBookings = await db.Bookings
         .Where(b => b.BookingStatus == "Pending" && b.CreatedOnUtc < cutoffTime)
         .ToListAsync();
@@ -654,13 +807,11 @@ app.MapPost("/test/bookings/expire", async (BookingPlatformDbContext db) =>
         return Results.Ok(new { message = "Nuk u gjet asnjë rezervim për të skaduar." });
     }
 
-    
     foreach (var booking in expiredBookings)
     {
         booking.Expire(now);
     }
 
-    
     await db.SaveChangesAsync();
 
     return Results.Ok(new
@@ -671,32 +822,12 @@ app.MapPost("/test/bookings/expire", async (BookingPlatformDbContext db) =>
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
-
-// POST /test/reviews
-app.MapPost("/test/reviews", async (CreateReviewCommand command, BookingPlatformDbContext db) =>
-{
-    var validator = new CreateReviewValidator();
-    var validationResult = await validator.ValidateAsync(command);
-
-    if (!validationResult.IsValid)
-    {
-        return Results.BadRequest(validationResult.Errors.Select(e => e.ErrorMessage));
-    }
-
-    var handler = new CreateReviewCommandHandler(db);
-    var result = await handler.Handle(command);
-
-    return result.IsSuccess
-        ? Results.Created($"/test/reviews/{result.ReviewId}", new
-        {
-            message = "Review created successfully",
-            reviewId = result.ReviewId
-        })
-        : Results.BadRequest(new { error = result.Error });
-});
-
-// PUT /test/reviews/{id}
-app.MapPut("/test/reviews/{id}", async (Guid id, UpdateReviewCommand command, BookingPlatformDbContext db) =>
+// PUT /test/reviews/{id} - UPDATE REVIEW
+app.MapPut("/test/reviews/{id}", async (
+    Guid id,
+    UpdateReviewCommand command,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) =>  // ✅ Kafka
 {
     command.ReviewId = id;
 
@@ -711,17 +842,59 @@ app.MapPut("/test/reviews/{id}", async (Guid id, UpdateReviewCommand command, Bo
     var handler = new UpdateReviewCommandHandler(db);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess)
+    {
+        //KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "ReviewUpdated",
+            id,
+            new
+            {
+                ReviewId = id,
+                UpdatedFields = new
+                {
+                    Rating = command.Rating,
+                    Comment = command.Comment
+                },
+                UpdatedAt = DateTime.UtcNow
+            }
+        );
+    }
+
     return result.IsSuccess
         ? Results.Ok(new { message = "Review updated successfully" })
         : Results.BadRequest(new { error = result.Error });
 });
 
-// DELETE /test/reviews/{id}
-app.MapDelete("/test/reviews/{id}", async (Guid id, BookingPlatformDbContext db) =>
+// DELETE /test/reviews/{id} - DELETE REVIEW
+app.MapDelete("/test/reviews/{id}", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) =>
 {
+
+    var review = await db.Reviews.FindAsync(id);
+
     var command = new DeleteReviewCommand { ReviewId = id };
     var handler = new DeleteReviewCommandHandler(db);
     var result = await handler.Handle(command);
+
+    if (result.IsSuccess && review != null)
+    {
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "ReviewDeleted",
+            id,
+            new
+            {
+                ReviewId = id,
+                BookingId = review.BookingId,
+                GuestId = review.GuestId,
+                Rating = review.Rating,
+                DeletedAt = DateTime.UtcNow
+            }
+        );
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "Review deleted successfully" })
@@ -812,13 +985,13 @@ app.MapPost("/test/logout", async (
 })
 .RequireAuthorization();
 
-// PUT /test/users/profile
+// PUT /test/users/profile - UPDATE PROFILE
 app.MapPut("/test/users/profile", async (
     [FromBody] UpdateUserProfileCommand command,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    KafkaProducerService kafkaProducer) => 
 {
-    // Extract userId from token
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
     {
@@ -826,8 +999,6 @@ app.MapPut("/test/users/profile", async (
     }
 
     var currentUserId = Guid.Parse(userIdClaim.Value);
-
-    // User can only update their own profile
     command.UserId = currentUserId;
 
     var validator = new UpdateUserProfileValidator();
@@ -841,21 +1012,41 @@ app.MapPut("/test/users/profile", async (
     var handler = new UpdateUserProfileCommandHandler(db);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess)
+    {
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "ProfileUpdated",
+            currentUserId,
+            new
+            {
+                UserId = currentUserId,
+                UpdatedFields = new
+                {
+                    FirstName = command.FirstName,
+                    LastName = command.LastName,
+                    PhoneNumber = command.PhoneNumber,
+                    ProfileImageUrl = command.ProfileImageUrl
+                },
+                UpdatedAt = DateTime.UtcNow
+            }
+        );
+    }
+
     return result.IsSuccess
         ? Results.Ok(new { message = "Profile updated successfully" })
         : Results.BadRequest(new { error = result.Error });
 })
 .RequireAuthorization();
 
-
-// POST /test/users/change-password
+// POST /test/users/change-password - CHANGE PASSWORD
 app.MapPost("/test/users/change-password", async (
     [FromBody] ChangePasswordCommand command,
     BookingPlatformDbContext db,
     HttpContext httpContext,
-    NotificationService notificationService) => 
+    NotificationService notificationService,
+    KafkaProducerService kafkaProducer) => 
 {
-    // Extract userId from token
     var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
     if (userIdClaim == null)
     {
@@ -863,8 +1054,6 @@ app.MapPost("/test/users/change-password", async (
     }
 
     var currentUserId = Guid.Parse(userIdClaim.Value);
-
-    // User can only change their own password
     command.UserId = currentUserId;
 
     var validator = new ChangePasswordValidator();
@@ -878,12 +1067,23 @@ app.MapPost("/test/users/change-password", async (
     var handler = new ChangePasswordCommandHandler(db);
     var result = await handler.Handle(command);
 
-    //Send notification
     if (result.IsSuccess)
     {
+        // SignalR notification
         await notificationService.SendToUser(
             currentUserId,
-            "Your password was changed successfully. If this wasn't you, contact support immediately!"
+            "🔒 Your password was changed successfully. If this wasn't you, contact support immediately!"
+        );
+
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "PasswordChanged",
+            currentUserId,
+            new
+            {
+                UserId = currentUserId,
+                ChangedAt = DateTime.UtcNow
+            }
         );
     }
 
@@ -984,15 +1184,30 @@ app.MapGet("/test/bookings/my-properties-bookings", async (
 })
 .RequireAuthorization();
 
-// PATCH /test/users/{id}/suspend
+// PATCH /test/users/{id}/suspend - SUSPEND USER
 app.MapPatch("/test/users/{id}/suspend", async (
     Guid id,
     BookingPlatformDbContext db,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    KafkaProducerService kafkaProducer) => 
 {
     var command = new SuspendUserCommand { UserId = id };
     var handler = new SuspendUserCommandHandler(db);
     var result = await handler.Handle(command, httpContext.User);
+
+    if (result.IsSuccess)
+    {
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "UserSuspended",
+            id,
+            new
+            {
+                UserId = id,
+                SuspendedAt = DateTime.UtcNow
+            }
+        );
+    }
 
     return result.IsSuccess
         ? Results.Ok(new { message = "User suspended successfully" })
@@ -1005,63 +1220,43 @@ app.MapPatch("/test/users/{id}/activate", async (Guid id, BookingPlatformDbConte
     var user = await db.Users.FindAsync(id);
     if (user == null) return Results.NotFound();
 
-    user.isActive = true; 
+    user.isActive = true;
     await db.SaveChangesAsync();
 
     return Results.Ok(new { message = "User activated successfully" });
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
-app.MapDelete("/test/users/{id}", async (Guid id, BookingPlatformDbContext db) =>
+// DELETE /test/users/{id} - DELETE USER
+app.MapDelete("/test/users/{id}", async (
+    Guid id,
+    BookingPlatformDbContext db,
+    KafkaProducerService kafkaProducer) => 
 {
+    var user = await db.Users.FindAsync(id);
+
     var command = new DeleteUserCommand { UserId = id };
     var handler = new DeleteUserCommandHandler(db);
     var result = await handler.Handle(command);
 
+    if (result.IsSuccess && user != null)
+    {
+        // KAFKA EVENT
+        await kafkaProducer.SendEventAsync(
+            "UserDeleted",
+            id,
+            new
+            {
+                UserId = id,
+                Email = user.Email,
+                DeletedAt = DateTime.UtcNow
+            }
+        );
+    }
+
     return result.IsSuccess
         ? Results.NoContent()
         : Results.NotFound(new { error = result.Error });
-})
-.RequireAuthorization(policy => policy.RequireRole("Admin"));
-
-// POST /test/bookings/send-reminders
-app.MapPost("/test/bookings/send-reminders", async (
-    BookingPlatformDbContext db,
-    NotificationService notificationService) =>
-{
-    var tomorrow = DateTime.UtcNow.AddDays(1).Date;
-    var dayAfterTomorrow = tomorrow.AddDays(1);
-
-    // Find all confirmed bookings starting tomorrow
-    var upcomingBookings = await db.Bookings
-        .Include(b => b.Property)
-        .Where(b => b.BookingStatus == "Confirmed" &&
-                    b.StartDate >= tomorrow &&
-                    b.StartDate < dayAfterTomorrow)
-        .ToListAsync();
-
-    if (!upcomingBookings.Any())
-    {
-        return Results.Ok(new { message = "No upcoming bookings to remind", count = 0 });
-    }
-
-    // Send reminder to each guest
-    foreach (var booking in upcomingBookings)
-    {
-        if (booking.Property != null)
-        {
-            await notificationService.SendToUser(
-                booking.GuestId,
-                $"⏰ Reminder: Your booking at '{booking.Property.Name}' starts tomorrow! Check-in time: {booking.Property.CheckInTime}"
-            );
-        }
-    }
-
-    return Results.Ok(new
-    {
-        message = "Reminders sent successfully",
-        count = upcomingBookings.Count
-    });
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
