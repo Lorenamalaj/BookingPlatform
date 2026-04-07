@@ -1,3 +1,5 @@
+using Booking.API.Hubs;
+using Booking.API.Services;
 using Booking.Application.Bookings.Commands.CancelBooking;
 using Booking.Application.Bookings.Commands.ConfirmBooking;
 using Booking.Application.Bookings.Commands.CreateBooking;
@@ -6,8 +8,10 @@ using Booking.Application.Bookings.Queries.GetAllBookings;
 using Booking.Application.Bookings.Queries.GetBookingById;
 using Booking.Application.Bookings.Queries.GetBookingsForMyProperties;
 using Booking.Application.Bookings.Queries.GetMyBookings;
+using Booking.Application.Properties.Commands.AddPropertyImage;
 using Booking.Application.Properties.Commands.ApproveProperty;
 using Booking.Application.Properties.Commands.CreateProperty;
+using Booking.Application.Properties.Commands.DeletePrImage;
 using Booking.Application.Properties.Commands.DeleteProperty;
 using Booking.Application.Properties.Commands.UpdateProperty;
 using Booking.Application.Properties.Queries.GetAllProperties;
@@ -26,6 +30,7 @@ using Booking.Application.Users.Commands.Logout;
 using Booking.Application.Users.Commands.RefreshToken;
 using Booking.Application.Users.Commands.SuspendUser;
 using Booking.Application.Users.Commands.UpdateUserProfile;
+using Booking.Application.Users.Commands.UploadProfileImage;
 using Booking.Application.Users.Queries.GetUser;
 using Booking.Infrastructure.Authentication;
 using Booking.Infrastructure.Data;
@@ -39,8 +44,6 @@ using Microsoft.IdentityModel.Tokens;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json.Serialization;
-using Booking.API.Services;
-using Booking.API.Hubs;
 
 Env.Load();
 
@@ -69,7 +72,7 @@ builder.Services.AddEndpointsApiExplorer();
 // Register services
 builder.Services.AddScoped<EmailService>();
 builder.Services.AddScoped<JwtService>();
-builder.Services.AddSingleton<KafkaProducerService>();  // ✅ Kafka Producer
+builder.Services.AddSingleton<KafkaProducerService>(); 
 builder.Services.AddSignalR();
 builder.Services.AddScoped<NotificationService>();
 
@@ -220,7 +223,6 @@ app.MapPost("/test/users", async (
     );
 
     newUser.UpdatePhoneNumber(req.PhoneNumber);
-    newUser.ProfileImageUrl = "default.png";
     newUser.isActive = true;
     newUser.CreatedAt = DateTime.UtcNow;
 
@@ -827,7 +829,7 @@ app.MapPut("/test/reviews/{id}", async (
     Guid id,
     UpdateReviewCommand command,
     BookingPlatformDbContext db,
-    KafkaProducerService kafkaProducer) =>  // ✅ Kafka
+    KafkaProducerService kafkaProducer) => 
 {
     command.ReviewId = id;
 
@@ -1026,7 +1028,6 @@ app.MapPut("/test/users/profile", async (
                     FirstName = command.FirstName,
                     LastName = command.LastName,
                     PhoneNumber = command.PhoneNumber,
-                    ProfileImageUrl = command.ProfileImageUrl
                 },
                 UpdatedAt = DateTime.UtcNow
             }
@@ -1260,6 +1261,109 @@ app.MapDelete("/test/users/{id}", async (
 })
 .RequireAuthorization(policy => policy.RequireRole("Admin"));
 
+
+// POST /users/profile/image - Upload profile photo
+app.MapPost("/users/profile/image", async (
+    [FromBody] UploadProfileImageRequest request,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var command = new UploadProfileImageCommand
+    {
+        UserId = userId,
+        ImageData = Convert.FromBase64String(request.ImageBase64),
+        ContentType = request.ContentType
+    };
+
+    var handler = new UploadProfileImageCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Profile image uploaded successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// POST /properties/{propertyId}/images - Add property image
+app.MapPost("/properties/{propertyId}/images", async (
+    Guid propertyId,
+    [FromBody] AddPrImageRequest request,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    // Verify ownership
+    var property = await db.Properties.FindAsync(propertyId);
+    if (property == null || property.OwnerId != userId)
+    {
+        return Results.Forbid();
+    }
+
+    var command = new AddPropertyImageCommand
+    {
+        PropertyId = propertyId,
+        ImageData = Convert.FromBase64String(request.ImageBase64),
+        ContentType = request.ContentType,
+        IsPrimary = request.IsPrimary
+    };
+
+    var handler = new AddPropertyImageCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Created($"/images/{result.ImageId}", new
+        {
+            message = "Image uploaded successfully",
+            imageId = result.ImageId
+        })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
+// DELETE /images/{imageId} - Delete property image
+app.MapDelete("/images/{imageId}", async (
+    Guid imageId,
+    BookingPlatformDbContext db,
+    HttpContext httpContext) =>
+{
+    var userIdClaim = httpContext.User.FindFirst(ClaimTypes.NameIdentifier);
+    if (userIdClaim == null)
+    {
+        return Results.Unauthorized();
+    }
+
+    var userId = Guid.Parse(userIdClaim.Value);
+
+    var command = new DeletePrImageCommand
+    {
+        ImageId = imageId,
+        RequestingUserId = userId
+    };
+
+    var handler = new DeletePrImageCommandHandler(db);
+    var result = await handler.Handle(command);
+
+    return result.IsSuccess
+        ? Results.Ok(new { message = "Image deleted successfully" })
+        : Results.BadRequest(new { error = result.Error });
+})
+.RequireAuthorization();
+
 app.Run();
 
 public record UserRegistration(
@@ -1272,3 +1376,5 @@ public record UserRegistration(
 );
 
 public record AddressRequest(string Country, string City, string Street, string PostalCode);
+public record UploadProfileImageRequest(string ImageBase64, string ContentType);
+public record AddPrImageRequest(string ImageBase64, string ContentType, bool IsPrimary);

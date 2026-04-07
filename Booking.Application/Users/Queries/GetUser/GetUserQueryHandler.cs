@@ -42,7 +42,6 @@ public class GetUserQueryHandler
             LastName = user.LastName,
             Email = user.Email,
             PhoneNumber = user.PhoneNumber,
-            ProfileImageUrl = user.ProfileImageUrl,
             IsActive = user.isActive,
             CreatedAt = user.CreatedAt,
             LastModifiedAt = user.LastModifiedAt,

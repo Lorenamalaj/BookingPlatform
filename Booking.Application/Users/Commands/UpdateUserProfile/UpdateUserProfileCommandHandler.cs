@@ -42,11 +42,6 @@ public class UpdateUserProfileCommandHandler
             user.UpdatePhoneNumber(command.PhoneNumber);
         }
 
-        if (command.ProfileImageUrl != null)
-        {
-            user.ProfileImageUrl = command.ProfileImageUrl;
-        }
-
         user.LastModifiedAt = DateTime.UtcNow;
 
         await _context.SaveChangesAsync();

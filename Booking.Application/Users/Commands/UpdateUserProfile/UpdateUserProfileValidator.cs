@@ -24,10 +24,5 @@ public class UpdateUserProfileValidator : AbstractValidator<UpdateUserProfileCom
 			.MaximumLength(20)
 			.When(x => !string.IsNullOrEmpty(x.PhoneNumber))
 			.WithMessage("Phone number cannot exceed 20 characters");
-
-		RuleFor(x => x.ProfileImageUrl)
-			.MaximumLength(500)
-			.When(x => !string.IsNullOrEmpty(x.ProfileImageUrl))
-			.WithMessage("Profile image URL cannot exceed 500 characters");
 	}
 }

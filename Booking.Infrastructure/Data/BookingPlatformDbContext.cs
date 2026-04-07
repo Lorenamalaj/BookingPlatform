@@ -1,5 +1,6 @@
 ﻿using Booking.Domain.Addresses;
 using Booking.Domain.OwnerProfiles;
+using Booking.Domain.PropertyImages;
 using Booking.Domain.RefreshTokens;
 using Booking.Domain.Reviews;
 using Booking.Domain.Roles;
@@ -24,6 +25,7 @@ namespace Booking.Infrastructure.Data
         public DbSet<Role> Roles { get; set; }
         public DbSet<UserRole> UserRoles { get; set; }
         public DbSet<OwnerProfile> OwnerProfiles { get; set; }
+        public DbSet<PropertyImage> PropertyImages { get; set; }
         public DbSet<PropertyEntity> Properties { get; set; }
         public DbSet<Address> Addresses { get; set; }
         public DbSet<BookingEntity> Bookings { get; set; }
@@ -62,8 +64,13 @@ namespace Booking.Infrastructure.Data
                 entity.Property(u => u.PhoneNumber)
                     .HasMaxLength(20);
 
-                entity.Property(u => u.ProfileImageUrl)
-                    .HasMaxLength(500);
+                entity.Property(u => u.ProfileImage)
+                    .HasColumnType("varbinary(max)")
+                    .IsRequired(false);
+
+                entity.Property(u => u.ProfileImageContentType)
+                    .HasMaxLength(100)
+                    .IsRequired(false);
 
                 entity.HasIndex(u => u.Email)
                     .IsUnique();
@@ -203,7 +210,7 @@ namespace Booking.Infrastructure.Data
                 entity.HasOne<User>()
                     .WithMany()
                     .HasForeignKey(p => p.OwnerId)
-                    .OnDelete(DeleteBehavior.Restrict);
+                    .OnDelete(DeleteBehavior.Cascade);
 
                 entity.HasOne<Address>()
                     .WithMany()
@@ -236,20 +243,15 @@ namespace Booking.Infrastructure.Data
                     .IsRequired()
                     .HasMaxLength(50);
 
-                entity.HasOne<PropertyEntity>()
-                    .WithMany()
-                    .HasForeignKey(b => b.PropertyId)
-                    .OnDelete(DeleteBehavior.Restrict);
-
                 entity.HasOne<User>()
                     .WithMany()
                     .HasForeignKey(b => b.GuestId)
-                    .OnDelete(DeleteBehavior.Restrict);
+                    .OnDelete(DeleteBehavior.Cascade);
 
-         entity.HasOne(b => b.Property)
-        .WithMany()
-        .HasForeignKey(b => b.PropertyId)
-        .OnDelete(DeleteBehavior.Restrict);
+                entity.HasOne(b => b.Property)
+                    .WithMany()
+                    .HasForeignKey(b => b.PropertyId)
+                    .OnDelete(DeleteBehavior.Restrict);
             });
 
             // Review Configuration
@@ -264,6 +266,7 @@ namespace Booking.Infrastructure.Data
                 entity.Property(r => r.Comment)
                     .HasMaxLength(1000);
 
+               
                 entity.HasOne<BookingEntity>()
                     .WithMany()
                     .HasForeignKey(r => r.BookingId)
@@ -272,11 +275,10 @@ namespace Booking.Infrastructure.Data
                 entity.HasOne<User>()
                     .WithMany()
                     .HasForeignKey(r => r.GuestId)
-                    .OnDelete(DeleteBehavior.Restrict);
-
+                    .OnDelete(DeleteBehavior.Restrict);  
             });
 
-            // ✅ RefreshToken Configuration
+            // RefreshToken Configuration
             modelBuilder.Entity<RefreshToken>(entity =>
             {
                 entity.ToTable("RefreshTokens");
@@ -300,6 +302,34 @@ namespace Booking.Infrastructure.Data
                     .HasForeignKey(rt => rt.UserId)
                     .OnDelete(DeleteBehavior.Cascade);
             });
+
+            modelBuilder.Entity<PropertyImage>(entity =>
+            {
+                entity.ToTable("PropertyImages");
+                entity.HasKey(pi => pi.Id);
+
+                entity.Property(pi => pi.Id)
+                    .ValueGeneratedOnAdd();
+
+                entity.Property(pi => pi.ImageData)
+                    .IsRequired()
+                    .HasColumnType("varbinary(max)");
+
+                entity.Property(pi => pi.ContentType)
+                    .IsRequired()
+                    .HasMaxLength(100);
+
+                entity.Property(pi => pi.IsPrimary)
+                    .IsRequired();
+
+                entity.Property(pi => pi.UploadedAt)
+                    .IsRequired();
+
+                entity.HasOne<PropertyEntity>()
+                    .WithMany()
+                    .HasForeignKey(pi => pi.PropertyId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
         }
     }
-}
+ }
