@@ -8,7 +8,8 @@
         public string Email { get; set; }
         public string PasswordHash { get; private set; }
         public string PhoneNumber { get; private set; }
-        public string ProfileImageUrl { get; set; }
+        public byte[]? ProfileImage { get; private set; }
+        public string? ProfileImageContentType { get; private set; }
         public bool isActive { get; set; }
         public DateTime CreatedAt { get; set; }
         public DateTime? LastModifiedAt { get; set; }
@@ -23,9 +24,6 @@
             PasswordHash = passwordHash;
             isActive = true;
             CreatedAt = DateTime.UtcNow;
-            LastModifiedAt = DateTime.UtcNow;
-            // Ensure non-nullable database columns have default values to avoid DbUpdateException
-            ProfileImageUrl = string.Empty;
             PhoneNumber = string.Empty;
         }
         public void UpdateProfile(string firstName, string lastName, string phoneNumber, string profileImageUrl)
@@ -37,7 +35,6 @@
                 LastName = lastName;
 
             PhoneNumber = phoneNumber;
-            ProfileImageUrl = profileImageUrl;
             LastModifiedAt = DateTime.UtcNow;
         }
 
@@ -77,6 +74,23 @@
                 return;
 
             PhoneNumber = phoneNumber;
+        }
+        public void UpdateProfileImage(byte[] imageData, string contentType)
+        {
+            if (imageData == null || imageData.Length == 0)
+                throw new ArgumentException("Image data cannot be empty");
+
+            if (string.IsNullOrWhiteSpace(contentType))
+                throw new ArgumentException("Content type is required");
+
+            ProfileImage = imageData;
+            ProfileImageContentType = contentType;
+        }
+
+        public void RemoveProfileImage()
+        {
+            ProfileImage = null;
+            ProfileImageContentType = null;
         }
     }
 }
